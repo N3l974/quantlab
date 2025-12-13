@@ -1,16 +1,30 @@
 # quantlab
-
-Monorepo pour des projets de **quant/algo trading**.
-
+ 
+ Monorepo pour des projets de **quant/algo trading**.
+ 
+## C’est quoi Quantlab ? (version simple)
+ 
+Quantlab est un “laboratoire” où je regroupe des projets autour des marchés financiers (récupération de données, backtests, optimisations, outils, etc.).
+L’objectif est d’avoir un endroit unique et structuré pour construire et itérer sur des idées, progressivement.
+ 
+## Lien GitHub
+ 
+- Vous pouvez trouver le code source de Quantlab sur GitHub : https://github.com/N3l974/quantlab
+ 
+## README racine vs README des projets
+ 
+- Le `README.md` **à la racine** explique l’organisation générale du repo (structure, règles, workflow).
+- Chaque dossier dans `projects/<nom-du-projet>/` a son **propre `README.md`** avec les commandes exactes pour installer et lancer ce projet.
+ 
 L’objectif est de garder :
-
+ 
 - un repo unique (vision globale)
 - des projets isolés (dépendances / versions Python / langages séparés)
 - un workflow Git simple et propre (branches + PR)
 - **aucun secret** dans Git
-
+ 
 ## Structure du repo
-
+ 
 - `projects/`
   - Projets “exécutables” (scripts, apps, services). Chaque projet a son propre environnement et ses dépendances.
 - `libs/`
@@ -22,8 +36,10 @@ L’objectif est de garder :
 
 ### Projets actuels
 
-- `projects/auto-optimizer-v1/`
-  - Version 1 d’un “auto optimizer” (actuellement en mode script).
+- `projects/market-data-downloader/`
+  - Téléchargement de données de marché (OHLCV v1) depuis plusieurs sources, stockage Parquet à la racine.
+- `projects/ohlcv-optimizer-1/`
+  - Projet d’optimisation (v1) consommateur de données (en cours).
 
 ### Projets futurs (exemples)
 
