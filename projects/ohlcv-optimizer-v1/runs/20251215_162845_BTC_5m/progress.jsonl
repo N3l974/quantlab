@@ -1,0 +1,2 @@
+{"t": 1765801726.7642725, "event": "strategy_start", "strategy": "ma_cross"}
+{"t": 1765801730.9385211, "event": "best_update", "strategy": "ma_cross", "trial": 0, "train_return": -62.30215705687544, "train_dd": 62.68214920027981}

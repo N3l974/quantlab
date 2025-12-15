@@ -1,0 +1,26 @@
+[W 2025-12-15 16:28:54,340] Trial 11 failed with parameters: {'fast_period': 77, 'slow_period': 99, 'tp_mode': 'pct', 'tp_pct': 8.582227017857216, 'tp_mgmt': 'full', 'sl_type': 'pct', 'sl_trailing': True, 'exit_on_flat': False, 'sl_pct': 8.849627106143236, 'pm_mode': 'grid', 'grid_max_adds': 3, 'grid_spacing_pct': 1.1174954895951998, 'grid_size_multiplier': 2.052807771145634} because of the following error: KeyboardInterrupt().
+Traceback (most recent call last):
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 205, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 124, in objective
+    res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\backtest\backtester.py", line 258, in run_backtest
+    ref_price = float(df.iloc[i - 1]["close"])
+                      ~~~~~~~^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1192, in __getitem__
+    return self._getitem_axis(maybe_callable, axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1755, in _getitem_axis
+    return self.obj._ixs(key, axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\frame.py", line 4014, in _ixs
+    result._set_is_copy(self, copy=copy)
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\generic.py", line 4407, in _set_is_copy
+    self._is_copy = weakref.ref(ref)
+    ^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\generic.py", line 6334, in __setattr__
+    object.__getattribute__(self, name)
+KeyboardInterrupt
+[W 2025-12-15 16:28:54,343] Trial 11 failed with value None.

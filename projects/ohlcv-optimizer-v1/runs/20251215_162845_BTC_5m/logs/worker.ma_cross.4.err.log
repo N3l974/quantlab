@@ -1,0 +1,29 @@
+[W 2025-12-15 16:28:54,287] Trial 14 failed with parameters: {'fast_period': 7, 'slow_period': 82, 'tp_mode': 'rr', 'tp_rr': 2.771668924996332, 'tp_mgmt': 'full', 'sl_type': 'pct', 'sl_trailing': False, 'exit_on_flat': False, 'sl_pct': 9.637961108040924, 'pm_mode': 'grid', 'grid_max_adds': 2, 'grid_spacing_pct': 2.0340961428715847, 'grid_size_multiplier': 2.957983849624868} because of the following error: KeyboardInterrupt().
+Traceback (most recent call last):
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 205, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 124, in objective
+    res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\backtest\backtester.py", line 145, in run_backtest
+    row = df.iloc[i]
+          ~~~~~~~^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1192, in __getitem__
+    return self._getitem_axis(maybe_callable, axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1755, in _getitem_axis
+    return self.obj._ixs(key, axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\frame.py", line 4011, in _ixs
+    result = self._constructor_sliced_from_mgr(new_mgr, axes=new_mgr.axes)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\frame.py", line 683, in _constructor_sliced_from_mgr
+    ser = Series._from_mgr(mgr, axes)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\generic.py", line 360, in _from_mgr
+    NDFrame.__init__(obj, mgr)
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\generic.py", line 286, in __init__
+    object.__setattr__(self, "_flags", Flags(self, allows_duplicate_labels=True))
+KeyboardInterrupt
+[W 2025-12-15 16:28:54,339] Trial 14 failed with value None.

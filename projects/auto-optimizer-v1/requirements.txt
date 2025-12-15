@@ -1,1 +1,0 @@
-# Ajoute ici les dépendances du projet (ex: numpy, pandas, ccxt)

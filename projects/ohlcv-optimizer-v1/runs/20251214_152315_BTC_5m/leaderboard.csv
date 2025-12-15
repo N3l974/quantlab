@@ -1,0 +1,2 @@
+strategy,return_train_pct,dd_train_pct,return_test_pct,dd_test_pct,trades_train,trades_test,eligible,trial,seconds,fast_period,slow_period,tp_mode,tp_pct,tp_mgmt,tp1_close_frac,tp_trail_pct,sl_type,sl_trailing,exit_on_flat,sl_pct,pm_mode,grid_max_adds,grid_spacing_pct,grid_size_multiplier
+ma_cross,2.6381118041509444,2.166183396781273,0.032758523140064,0.8600046696538322,22,10,True,111,15.59436845779419,70,197,pct,1.6813625753671233,partial_trailing,0.3076276521516437,2.1956343229817765,pct,True,True,4.451234038802532,grid,7,0.8803668401499103,2.237121540149568

@@ -1,0 +1,6 @@
+Exception ignored in: <function WeakKeyDictionary.__init__.<locals>.remove at 0x0000021E0AE64400>
+Traceback (most recent call last):
+  File "C:\Users\Nahel\AppData\Local\Programs\Python\Python311\Lib\weakref.py", line 369, in remove
+    def remove(k, selfref=ref(self)):
+
+KeyboardInterrupt: 

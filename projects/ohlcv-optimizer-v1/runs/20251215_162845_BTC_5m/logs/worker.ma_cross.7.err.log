@@ -1,0 +1,27 @@
+[W 2025-12-15 16:28:54,403] Trial 9 failed with parameters: {'fast_period': 58, 'slow_period': 240, 'tp_mode': 'pct', 'tp_pct': 4.265912425155207, 'tp_mgmt': 'full', 'sl_type': 'pct', 'sl_trailing': True, 'exit_on_flat': False, 'sl_pct': 9.902060697582957, 'pm_mode': 'none'} because of the following error: KeyboardInterrupt().
+Traceback (most recent call last):
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 205, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 124, in objective
+    res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\backtest\backtester.py", line 145, in run_backtest
+    row = df.iloc[i]
+          ~~~~~~~^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1192, in __getitem__
+    return self._getitem_axis(maybe_callable, axis=axis)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1753, in _getitem_axis
+    self._validate_integer(key, axis)
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\indexing.py", line 1684, in _validate_integer
+    len_axis = len(self.obj._get_axis(axis))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\generic.py", line 591, in _get_axis
+    axis_number = self._get_axis_number(axis)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\pandas\core\generic.py", line 575, in _get_axis_number
+    @final
+    
+KeyboardInterrupt
+[W 2025-12-15 16:28:54,405] Trial 9 failed with value None.

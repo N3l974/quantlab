@@ -1,0 +1,40 @@
+{"t": 1765797557.4664795, "event": "strategy_start", "strategy": "ma_cross"}
+{"t": 1765797561.621404, "event": "best_update", "strategy": "ma_cross", "trial": 3, "train_return": 19.403966908581104, "train_dd": 17.077453004214306}
+{"t": 1765797563.7425842, "event": "best_update", "strategy": "ma_cross", "trial": 10, "train_return": -0.055240157499270026, "train_dd": 3.8408329449932785}
+{"t": 1765797587.035788, "event": "best_update", "strategy": "ma_cross", "trial": 88, "train_return": -0.7886404369838007, "train_dd": 3.5123045307815883}
+{"t": 1765797665.5217345, "event": "best_update", "strategy": "ma_cross", "trial": 328, "train_return": 0.13583307872913064, "train_dd": 3.3343922374889123}
+{"t": 1765797676.0578141, "event": "best_update", "strategy": "ma_cross", "trial": 370, "train_return": 2.6574447869117, "train_dd": 3.0582162130418444}
+{"t": 1765797777.498438, "event": "best_update", "strategy": "ma_cross", "trial": 709, "train_return": 1.4066781959614305, "train_dd": 2.9397913892045575}
+{"t": 1765797790.1718738, "event": "best_update", "strategy": "ma_cross", "trial": 754, "train_return": 0.8416991520310724, "train_dd": 2.920304374859605}
+{"t": 1765797863.4629273, "event": "strategy_end", "strategy": "ma_cross"}
+{"t": 1765797863.4644868, "event": "strategy_start", "strategy": "rsi_reversion"}
+{"t": 1765797867.6668053, "event": "best_update", "strategy": "rsi_reversion", "trial": 7, "train_return": -0.18936295937661551, "train_dd": 0.22760027389211243}
+{"t": 1765797869.8186362, "event": "best_update", "strategy": "rsi_reversion", "trial": 12, "train_return": 0.05032053725440022, "train_dd": 0.11335916731959952}
+{"t": 1765797874.019966, "event": "best_update", "strategy": "rsi_reversion", "trial": 31, "train_return": 1.1684731082359567, "train_dd": 0.041557993441902585}
+{"t": 1765797884.7053885, "event": "best_update", "strategy": "rsi_reversion", "trial": 74, "train_return": 1.2182117593395159, "train_dd": 0.04155799344189689}
+{"t": 1765797893.0562546, "event": "best_update", "strategy": "rsi_reversion", "trial": 106, "train_return": 0.03677307777860683, "train_dd": 0.004370310154760004}
+{"t": 1765797928.2830186, "event": "best_update", "strategy": "rsi_reversion", "trial": 244, "train_return": 0.0074305601652335795, "train_dd": 0.0}
+{"t": 1765797972.4699697, "event": "best_update", "strategy": "rsi_reversion", "trial": 431, "train_return": 0.6001857596548588, "train_dd": 0.0}
+{"t": 1765798114.7216697, "event": "strategy_end", "strategy": "rsi_reversion"}
+{"t": 1765798114.7227595, "event": "strategy_start", "strategy": "bollinger_breakout"}
+{"t": 1765798118.9492466, "event": "best_update", "strategy": "bollinger_breakout", "trial": 0, "train_return": 0.0, "train_dd": 0.0}
+{"t": 1765798357.2435904, "event": "strategy_end", "strategy": "bollinger_breakout"}
+{"t": 1765798357.245595, "event": "strategy_start", "strategy": "range_breakout"}
+{"t": 1765798361.4239995, "event": "best_update", "strategy": "range_breakout", "trial": 8, "train_return": 2.039525433870071, "train_dd": 10.94051285259529}
+{"t": 1765798363.8114917, "event": "best_update", "strategy": "range_breakout", "trial": 14, "train_return": 2.3744804896795424, "train_dd": 3.518847313348349}
+{"t": 1765798406.496752, "event": "best_update", "strategy": "range_breakout", "trial": 191, "train_return": 3.473653901020435, "train_dd": 2.756656115386006}
+{"t": 1765798494.2396612, "event": "best_update", "strategy": "range_breakout", "trial": 551, "train_return": 4.771547505492646, "train_dd": 2.337577114460753}
+{"t": 1765798538.1653159, "event": "best_update", "strategy": "range_breakout", "trial": 719, "train_return": 4.385341228096196, "train_dd": 2.1732635725244123}
+{"t": 1765798552.8995585, "event": "best_update", "strategy": "range_breakout", "trial": 776, "train_return": 2.4121629343187623, "train_dd": 1.599560362111228}
+{"t": 1765798610.8810465, "event": "strategy_end", "strategy": "range_breakout"}
+{"t": 1765798610.8810465, "event": "strategy_start", "strategy": "stochastic"}
+{"t": 1765798615.0067556, "event": "best_update", "strategy": "stochastic", "trial": 5, "train_return": -20.776588420119047, "train_dd": 34.573273779215626}
+{"t": 1765798617.0816767, "event": "best_update", "strategy": "stochastic", "trial": 9, "train_return": 16.84348532646034, "train_dd": 8.260727503062292}
+{"t": 1765798619.441205, "event": "best_update", "strategy": "stochastic", "trial": 20, "train_return": -5.599292968919012, "train_dd": 5.599292968919016}
+{"t": 1765798627.6548483, "event": "best_update", "strategy": "stochastic", "trial": 53, "train_return": -3.0589468002696574, "train_dd": 3.0589468002696596}
+{"t": 1765798644.7999187, "event": "best_update", "strategy": "stochastic", "trial": 114, "train_return": -1.5031943684634674, "train_dd": 1.52139155968897}
+{"t": 1765798651.1257577, "event": "best_update", "strategy": "stochastic", "trial": 145, "train_return": -0.7652186494435997, "train_dd": 1.3040278886418046}
+{"t": 1765798653.184712, "event": "best_update", "strategy": "stochastic", "trial": 155, "train_return": -0.3966155443836161, "train_dd": 0.4696579280672539}
+{"t": 1765798663.6168764, "event": "best_update", "strategy": "stochastic", "trial": 189, "train_return": -0.05463991982677108, "train_dd": 0.1603594685666181}
+{"t": 1765798668.1063507, "event": "best_update", "strategy": "stochastic", "trial": 210, "train_return": 0.0, "train_dd": 0.0}
+{"t": 1765798869.7322488, "event": "strategy_end", "strategy": "stochastic"}

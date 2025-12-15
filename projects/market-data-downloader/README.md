@@ -4,10 +4,19 @@ Projet (mode script) pour télécharger des données de marché.
 
 Objectifs v1:
 
-- Télécharger des **OHLCV** depuis plusieurs sources (ex: Binance Futures, Hyperliquid Perps)
+- Télécharger des **OHLCV** depuis plusieurs sources (ex: Binance Futures, Hyperliquid Perps, Kraken Spot, Kraken Futures)
 - Stockage standardisé en **Parquet** à la racine du monorepo
 - Éviter le re-téléchargement (cache par fichiers mensuels)
 - UX par projet (CLI interactive + mode non-interactif)
+
+## Sources supportées (v1)
+
+Noms des sources (CLI/Streamlit):
+
+- `binance_futures`
+- `hyperliquid_perps`
+- `kraken_spot`
+- `kraken_futures`
 
 ## Stockage des données
 
@@ -18,6 +27,11 @@ Les données sont stockées (hors Git) dans:
 Datasets v1:
 
 - `ohlcv` (seul implémenté pour le moment)
+
+Notes:
+
+- Certaines sources ont des limites d'historique (ex: Hyperliquid ~5000 candles) : l'UI peut afficher une date de départ estimée.
+- Un ancien layout sans le dossier `ohlcv/` peut exister; le downloader peut migrer au nouveau layout lors d'un téléchargement.
 
 Schéma v1 (Parquet):
 
@@ -55,7 +69,7 @@ python src\main.py sources
 Télécharger des données:
 
 ```bash
-python src\main.py download --source hyperliquid_perps --symbol BTC --tf 1h --start 2025-07-01 --end 2025-07-07
+python src\main.py download --dataset ohlcv --source hyperliquid_perps --symbol BTC --tf 1h --start 2025-07-01 --end 2025-07-07
 ```
 
 ## Test rapide (E2E)
@@ -65,8 +79,8 @@ python src\main.py download --source hyperliquid_perps --symbol BTC --tf 1h --st
 Télécharger un petit range puis relancer la même commande pour vérifier le cache (pas de re-téléchargement):
 
 ```bash
-python src\main.py download --source hyperliquid_perps --symbol BTC --tf 1h --start 2025-07-01 --end 2025-07-07
-python src\main.py download --source hyperliquid_perps --symbol BTC --tf 1h --start 2025-07-01 --end 2025-07-07
+python src\main.py download --dataset ohlcv --source hyperliquid_perps --symbol BTC --tf 1h --start 2025-07-01 --end 2025-07-07
+python src\main.py download --dataset ohlcv --source hyperliquid_perps --symbol BTC --tf 1h --start 2025-07-01 --end 2025-07-07
 ```
 
 ### Binance Futures
