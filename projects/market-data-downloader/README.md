@@ -17,6 +17,67 @@ Noms des sources (CLI/Streamlit):
 - `hyperliquid_perps`
 - `kraken_spot`
 - `kraken_futures`
+- `mt5_icmarkets`
+
+## cTrader Open API (en pause / reprise)
+
+Objectif: ajouter une source `ctrader_icmarkets` (demo/live) basée sur cTrader Open API pour télécharger des OHLCV (trendbars).
+
+### Pré-requis
+
+- Avoir un compte cTrader (cTID) + un compte broker (ex: ICMarkets demo/live).
+- Créer une application sur le portail Open API: https://openapi.ctrader.com/
+- Attendre la validation/activation de l'app si requis (certaines apps restent en statut pending un moment).
+
+### Checklist OAuth (obtenir un access token)
+
+1) Dans l'app Open API:
+
+- Définir un `redirect_uri` (ex: `http://localhost:8787/callback`).
+- Récupérer `client_id` et `client_secret`.
+
+2) Ouvrir l'URL d'autorisation (dans un navigateur) puis cliquer "Allow access".
+
+- Scope recommandé pour downloader OHLCV: `accounts` (pas besoin de trading).
+
+```text
+https://id.ctrader.com/my/settings/openapi/grantingaccess/?client_id={client_id}&redirect_uri={redirect_uri}&scope=accounts&product=web
+```
+
+3) Récupérer le paramètre `code` dans l'URL de redirection:
+
+```text
+{redirect_uri}?code=XXXX
+```
+
+4) Échanger `code` contre `accessToken` et `refreshToken`:
+
+```text
+https://openapi.ctrader.com/apps/token?grant_type=authorization_code&code={code}&redirect_uri={redirect_uri}&client_id={client_id}&client_secret={client_secret}
+```
+
+5) Identifier le `ctidTraderAccountId` (compte demo/live) via la requête Open API "GetAccountListByAccessToken" (nécessite une connexion au proxy Open API), puis l'utiliser pour authentifier la session.
+
+### Endpoints (proxy Open API)
+
+- Protobuf:
+  - Demo: `demo.ctraderapi.com:5035`
+  - Live: `live.ctraderapi.com:5035`
+- JSON:
+  - Demo: `demo.ctraderapi.com:5036`
+  - Live: `live.ctraderapi.com:5036`
+
+### Variables d'environnement (prévu pour l'intégration)
+
+La source `ctrader_icmarkets` n'est pas encore implémentée, mais l'intégration utilisera des variables d'environnement (pas de secrets en dur):
+
+- `CTRADER_CLIENT_ID`
+- `CTRADER_CLIENT_SECRET`
+- `CTRADER_REDIRECT_URI`
+- `CTRADER_ACCESS_TOKEN`
+- `CTRADER_REFRESH_TOKEN`
+- `CTRADER_ACCOUNT_ID` (ctidTraderAccountId)
+- `CTRADER_ENV` = `demo` | `live`
 
 ## Stockage des données
 
@@ -108,5 +169,7 @@ python src\main.py download --dataset ohlcv --source binance_futures --symbol BT
 ## Secrets
 
 - Aucune clé n’est requise pour OHLCV public.
+- `mt5_icmarkets` utilise le terminal MT5 local (login effectué dans le terminal) et ne nécessite pas de clés API.
+- cTrader Open API nécessite des tokens OAuth (à fournir via variables d'environnement).
 - Ne jamais commiter de `.env`.
 - Utiliser `.env.example` comme modèle si besoin.

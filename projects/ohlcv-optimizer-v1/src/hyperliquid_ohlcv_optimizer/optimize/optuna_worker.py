@@ -103,17 +103,28 @@ def main() -> None:
     st_ctx = StrategyContext(timeframe=base.timeframe)
     stop_flag = Path(args.stop_flag) if args.stop_flag else None
 
+    def _complete_trials_count(st: optuna.Study) -> int:
+        try:
+            return len(
+                st.get_trials(
+                    deepcopy=False,
+                    states=(optuna.trial.TrialState.COMPLETE,),
+                )
+            )
+        except Exception:
+            return len([t for t in st.trials if t.state == optuna.trial.TrialState.COMPLETE])
+
     def on_trial_complete(st: optuna.Study, tr: optuna.trial.FrozenTrial) -> None:
         if stop_flag is not None and stop_flag.exists():
             st.stop()
-        if int(base.max_trials) > 0 and len(st.trials) >= int(base.max_trials):
+        if int(base.max_trials) > 0 and _complete_trials_count(st) >= int(base.max_trials):
             st.stop()
 
     def objective(trial: optuna.Trial):
         if stop_flag is not None and stop_flag.exists():
             raise optuna.TrialPruned()
 
-        if int(base.max_trials) > 0 and len(study.trials) >= int(base.max_trials):
+        if int(base.max_trials) > 0 and _complete_trials_count(study) >= int(base.max_trials):
             raise optuna.TrialPruned()
 
         _ = strat.sample_params(trial)

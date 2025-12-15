@@ -1,0 +1,35 @@
+{
+  "data": {
+    "data_root": "C:\\Users\\Nahel\\Documents\\GitHub\\quantlab\\data\\market_data",
+    "source": "binance_futures",
+    "symbol": "BTC_USDC_USDC",
+    "timeframe": "5m",
+    "start_ms": 1704326400000,
+    "end_ms": 1765756800000
+  },
+  "config": {
+    "initial_equity": 10000.0,
+    "fee_bps": 4.0,
+    "slippage_bps": 0.5,
+    "dd_threshold_pct": 40.0,
+    "min_trades_train": 50,
+    "min_trades_test": 50,
+    "max_trials": 2000,
+    "time_budget_seconds": null,
+    "stop_mode": "Trials",
+    "workers": 8,
+    "timeframe": "5m",
+    "pm_mode": "auto",
+    "strategies": [
+      "stochastic"
+    ],
+    "risk_pct": 0.01,
+    "max_position_notional_pct_equity": 100.0,
+    "pareto_candidates_max": 200,
+    "candidate_pool": "pareto",
+    "global_top_k": 50,
+    "ranking_metric": "median_pnl_per_position_test",
+    "train_frac": 0.75
+  },
+  "run_id": "20251215_220739"
+}

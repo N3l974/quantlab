@@ -4,7 +4,7 @@ import argparse
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(prog="hyperliquid-ohlcv-optimizer-v1")
+    p = argparse.ArgumentParser(prog="ohlcv-optimizer-v1")
     p.add_argument("command", nargs="?", default="help", choices=["help"], help="Command")
     _ = p.parse_args()
 

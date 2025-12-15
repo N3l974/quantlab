@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import queue
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import traceback
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -286,7 +287,7 @@ def _build_manifest(
         pm["martingale"] = martingale
 
     return {
-        "project": "hyperliquid-ohlcv-optimizer-v1",
+        "project": "ohlcv-optimizer-v1",
         "version": 1,
         "data": {
             "data_root": data_root,
@@ -327,8 +328,8 @@ def _build_manifest(
 
 
 def main() -> None:
-    st.set_page_config(page_title="Hyperliquid OHLCV Optimizer v1", layout="wide")
-    st.title("Hyperliquid OHLCV Optimizer v1")
+    st.set_page_config(page_title="OHLCV Optimizer v1", layout="wide")
+    st.title("OHLCV Optimizer v1")
 
     if "start_date" not in st.session_state:
         st.session_state["start_date"] = ""
@@ -367,57 +368,79 @@ def main() -> None:
     broker_profile = "hyperliquid_perps"
     selected_run_dir: Path | None = None
     selected_report_payload: dict | None = None
+    vault_dir = _PROJECT_ROOT / "champion_vault"
+    selected_vault_champion_path: Path | None = None
+    selected_vault_champion_payload: dict | None = None
 
     with st.sidebar.expander("Settings", expanded=True):
         data_root_default = default_data_root()
         data_root = Path(st.text_input("Data root", value=str(data_root_default)))
 
         if mode == "Backtest":
-            run_dirs = _discover_saved_runs()
-            if run_dirs:
-                qp_run = _get_query_param("run")
-                run_index = 0
-                if qp_run:
-                    for i, p in enumerate(run_dirs):
-                        if p.name == qp_run:
-                            run_index = i
+            try:
+                vault_files = sorted([p for p in vault_dir.rglob("*.json") if p.is_file()])
+            except Exception:
+                vault_files = []
+
+            if not vault_files:
+                st.warning(f"No champions found in vault: {vault_dir}")
+                selected_vault_champion_path = None
+                selected_vault_champion_payload = None
+            else:
+                qp_champion = _get_query_param("champion")
+                champ_index = 0
+                if qp_champion:
+                    for i, p in enumerate(vault_files):
+                        if p.name == qp_champion:
+                            champ_index = i
                             break
 
-                selected_run_dir = st.selectbox(
-                    "Run",
-                    options=run_dirs,
-                    index=run_index,
-                    format_func=_run_display_name,
-                    key="selected_run_dir",
-                )
-                selected_report_payload = _load_report_json(selected_run_dir)
-            else:
-                selected_run_dir = None
-                selected_report_payload = None
+                def _champ_label(p: Path) -> str:
+                    try:
+                        return str(p.relative_to(vault_dir))
+                    except Exception:
+                        return str(p)
 
-            run_source = "hyperliquid_perps"
-            if isinstance(selected_report_payload, dict):
-                run_source = str((selected_report_payload.get("data") or {}).get("source") or run_source)
-            else:
-                ctx_payload = _load_context_json(selected_run_dir) if selected_run_dir is not None else None
-                if isinstance(ctx_payload, dict):
-                    run_source = str((ctx_payload.get("data") or {}).get("source") or run_source)
+                selected_vault_champion_path = st.selectbox(
+                    "Champion (vault)",
+                    options=vault_files,
+                    index=champ_index,
+                    format_func=_champ_label,
+                    key="selected_vault_champion_path",
+                )
+
+                try:
+                    selected_vault_champion_payload = json.loads(
+                        selected_vault_champion_path.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    selected_vault_champion_payload = None
+
+            champ_source = "hyperliquid_perps"
+            if isinstance(selected_vault_champion_payload, dict):
+                data_snap = selected_vault_champion_payload.get("data_snapshot") or {}
+                champ_source = str(data_snap.get("source") or champ_source)
+
             broker_profile = str(
                 st.selectbox(
                     "Broker profile",
-                    options=["hyperliquid_perps", "binance_futures"],
-                    index=(0 if run_source != "binance_futures" else 1),
+                    options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
+                    index=(
+                        1
+                        if champ_source == "binance_futures"
+                        else (2 if champ_source == "mt5_icmarkets" else 0)
+                    ),
                     disabled=True,
-                    help="Backtest/Analyze follows the run's source (report.json if present, else context.json).",
+                    help="Backtest follows the champion snapshot source.",
                 )
             )
         else:
             broker_profile = str(
                 st.selectbox(
                     "Broker profile",
-                    options=["hyperliquid_perps", "binance_futures"],
+                    options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
                     index=0,
-                    help="Chooses the OHLCV source folder under data/market_data/ohlcv/<source>/...",
+                    help="Chooses the OHLCV source folder under data/market_data/ohlcv/<source>/..."
                 )
             )
 
@@ -428,6 +451,9 @@ def main() -> None:
             if str(broker_profile) == "binance_futures":
                 fee_default = 4.0
                 slippage_default = 0.5
+            if str(broker_profile) == "mt5_icmarkets":
+                fee_default = 0.0
+                slippage_default = 1.0
 
             if "last_broker_profile" not in st.session_state:
                 st.session_state["last_broker_profile"] = str(broker_profile)
@@ -487,7 +513,7 @@ def main() -> None:
 
             time_budget_minutes_ui = int(
                 st.number_input(
-                    "Stop after time budget (minutes)",
+                    "Stop after time budget (minutes per strategy)",
                     min_value=1,
                     value=30,
                     step=5,
@@ -704,7 +730,7 @@ def main() -> None:
         cut = int(len(df) * float(getattr(cfg, "train_frac", 0.75))) if len(df) else 0
 
         report_payload = {
-            "project": "hyperliquid-ohlcv-optimizer-v1",
+            "project": "ohlcv-optimizer-v1",
             "version": 1,
             "saved_at": run_dir.name,
             "meta": getattr(report, "meta", None),
@@ -845,26 +871,20 @@ def main() -> None:
             if not pos_df.empty:
                 st.dataframe(pos_df, width="stretch")
 
-    def _run_candidate_backtest(*, candidate: dict, report_payload: dict) -> None:
-        if not isinstance(candidate, dict):
-            st.error("Invalid candidate")
-            return
+    def _safe_name(value: str) -> str:
+        s = str(value or "").strip()
+        out = []
+        for ch in s:
+            if ch.isalnum() or ch in {"_", "-", "."}:
+                out.append(ch)
+            else:
+                out.append("_")
+        return "".join(out) or "unknown"
 
-        cfg_payload = report_payload.get("config") or {}
-        cfg = _cfg_from_report(cfg_payload)
-        try:
-            df = _load_df_for_report(report_payload=report_payload, data_root_override=data_root)
-        except FileNotFoundError as e:
-            st.error(str(e))
-            st.info("The run references a symbol/timeframe folder that is missing locally. Download it with projects/market-data-downloader.")
-            return
-        except Exception as e:
-            st.error(f"Failed to load run candles: {type(e).__name__}: {e}")
-            return
-        if df.empty:
-            st.error("No candles for this run.")
-            return
+    def _now_utc_iso() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+    def _candidate_params(candidate: dict) -> dict:
         drop_keys = {
             "return_train_pct",
             "dd_train_pct",
@@ -891,7 +911,7 @@ def main() -> None:
         }
 
         params: dict = {}
-        for k, v in candidate.items():
+        for k, v in (candidate or {}).items():
             if k in drop_keys:
                 continue
             try:
@@ -900,6 +920,239 @@ def main() -> None:
             except Exception:
                 pass
             params[k] = v
+        return params
+
+    class _ParamCaptureTrial:
+        def __init__(self):
+            self.keys: set[str] = set()
+
+        def suggest_int(self, name, low, high, *args, **kwargs):
+            self.keys.add(str(name))
+            return int(low)
+
+        def suggest_float(self, name, low, high, *args, **kwargs):
+            self.keys.add(str(name))
+            return float(low)
+
+        def suggest_categorical(self, name, choices, *args, **kwargs):
+            self.keys.add(str(name))
+            try:
+                return list(choices)[0]
+            except Exception:
+                return None
+
+    def _allowed_param_keys_for_strategy(strat_name: str) -> set[str] | None:
+        all_strats = builtin_strategies()
+        strat = next((s for s in all_strats if s.name == str(strat_name)), None)
+        if strat is None:
+            return None
+
+        t = _ParamCaptureTrial()
+        try:
+            _ = strat.sample_params(t)
+        except Exception:
+            pass
+
+        common_keys = {
+            "strategy",
+            "pm_mode",
+            "tp_mode",
+            "tp_pct",
+            "tp_rr",
+            "tp_mgmt",
+            "tp1_close_frac",
+            "tp_trail_pct",
+            "sl_type",
+            "sl_pct",
+            "sl_atr_period",
+            "sl_atr_mult",
+            "sl_trailing",
+            "exit_on_flat",
+        }
+        pm_keys = {
+            "grid_max_adds",
+            "grid_spacing_pct",
+            "grid_size_multiplier",
+            "martingale_multiplier",
+            "martingale_max_steps",
+        }
+        return set(common_keys) | set(pm_keys) | set(t.keys)
+
+    def _save_retained_champion_to_vault(*, run_dir: Path, candidate: dict, report_payload: dict) -> Path | None:
+        if not isinstance(candidate, dict):
+            return None
+
+        data_info = report_payload.get("data") or {}
+        cfg_info = report_payload.get("config") or {}
+
+        strat_name = str(candidate.get("strategy") or "")
+        if not strat_name:
+            return None
+
+        trial_n = candidate.get("trial")
+        try:
+            trial_n_int = int(trial_n) if trial_n is not None else None
+        except Exception:
+            trial_n_int = None
+
+        params = _candidate_params(candidate)
+        payload = {
+            "schema_version": 1,
+            "saved_at": _now_utc_iso(),
+            "origin": {"run_id": str(run_dir.name)},
+            "strategy": strat_name,
+            "trial": trial_n_int,
+            "ranking_metric": str(cfg_info.get("ranking_metric") or ""),
+            "candidate": candidate,
+            "params": params,
+            "data_snapshot": data_info,
+            "config_snapshot": cfg_info,
+        }
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        sym = _safe_name(str(data_info.get("symbol_storage") or data_info.get("symbol") or ""))
+        tf = _safe_name(str(data_info.get("timeframe") or ""))
+        strat_dir = _safe_name(strat_name)
+        tr_part = f"trial_{trial_n_int}" if trial_n_int is not None else "trial_unknown"
+        base_fn = f"retained__{_safe_name(run_dir.name)}__{strat_dir}__{tr_part}__{ts}.json"
+
+        run_out_dir = run_dir / "retained_champions"
+        run_out_dir.mkdir(parents=True, exist_ok=True)
+        run_path = run_out_dir / base_fn
+        try:
+            run_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            return None
+
+        vault_out_dir = vault_dir / strat_dir / sym / tf
+        vault_out_dir.mkdir(parents=True, exist_ok=True)
+        vault_path = vault_out_dir / base_fn
+        try:
+            shutil.copy2(run_path, vault_path)
+        except Exception:
+            try:
+                vault_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                return None
+
+        try:
+            index_path = vault_dir / "index.jsonl"
+            index_row = {
+                "saved_at": payload.get("saved_at"),
+                "run_id": str(run_dir.name),
+                "strategy": strat_name,
+                "trial": trial_n_int,
+                "path": str(vault_path),
+                "symbol": str(data_info.get("symbol_storage") or data_info.get("symbol") or ""),
+                "timeframe": str(data_info.get("timeframe") or ""),
+                "source": str(data_info.get("source") or ""),
+            }
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            with index_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(index_row, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+        return vault_path
+
+    def _run_vault_champion_backtest(*, champion_payload: dict) -> None:
+        if not isinstance(champion_payload, dict):
+            st.error("Invalid champion payload")
+            return
+
+        cfg_payload = champion_payload.get("config_snapshot") or {}
+        data_payload = champion_payload.get("data_snapshot") or {}
+        params = champion_payload.get("params")
+        strat_name = str(champion_payload.get("strategy") or "")
+
+        if not isinstance(params, dict):
+            st.error("Champion is missing params")
+            return
+        if not strat_name:
+            st.error("Champion is missing strategy")
+            return
+
+        allowed = _allowed_param_keys_for_strategy(strat_name)
+        if allowed is None:
+            st.error(f"Strategy not found: {strat_name}")
+            return
+
+        unknown = sorted([k for k in params.keys() if k not in allowed])
+        if unknown:
+            st.error(f"Champion params contain unknown keys (strict): {unknown}")
+            return
+
+        cfg = _cfg_from_report(cfg_payload)
+        try:
+            df = _load_df_for_report(report_payload={"data": data_payload}, data_root_override=data_root)
+        except FileNotFoundError as e:
+            st.error(str(e))
+            st.info("The champion references a symbol/timeframe folder that is missing locally. Download it with projects/market-data-downloader.")
+            return
+        except Exception as e:
+            st.error(f"Failed to load candles: {type(e).__name__}: {e}")
+            return
+        if df.empty:
+            st.error("No candles.")
+            return
+
+        all_strats = builtin_strategies()
+        strat = next((s for s in all_strats if s.name == strat_name), None)
+        if strat is None:
+            st.error(f"Strategy not found: {strat_name}")
+            return
+
+        ctx = StrategyContext(timeframe=str(data_payload.get("timeframe") or cfg.timeframe))
+        bt_cfg = build_backtest_config_from_params(params=params, base=cfg)
+        try:
+            sig = strat.compute_signal(df, params, ctx)
+        except Exception as e:
+            st.error(f"Strategy failed (strict): {type(e).__name__}: {e}")
+            return
+
+        res = run_backtest(df=df, signal=sig, config=bt_cfg)
+        pos_df, overview = summarize_positions(res.trades)
+        overview["sharpe"] = _sharpe_from_equity(res.equity_curve)
+
+        st.subheader("Vault champion backtest")
+        st.caption(
+            f"{strat_name} | trial {champion_payload.get('trial')} | {data_payload.get('symbol_storage') or data_payload.get('symbol')} {data_payload.get('timeframe')}"
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Net return (%)", f"{res.net_return_pct:.2f}")
+        c2.metric("Max drawdown (%)", f"{res.max_drawdown_pct:.2f}")
+        c3.metric("Positions", int(overview.get("positions", 0)))
+        c4.metric("Sharpe", f"{float(overview.get('sharpe', 0.0)):.3f}")
+
+        with st.expander("Overview JSON", expanded=False):
+            st.json(overview)
+
+        with st.expander("Positions table", expanded=False):
+            if not pos_df.empty:
+                st.dataframe(pos_df, width="stretch")
+
+    def _run_candidate_backtest(*, candidate: dict, report_payload: dict) -> None:
+        if not isinstance(candidate, dict):
+            st.error("Invalid candidate")
+            return
+
+        cfg_payload = report_payload.get("config") or {}
+        cfg = _cfg_from_report(cfg_payload)
+        try:
+            df = _load_df_for_report(report_payload=report_payload, data_root_override=data_root)
+        except FileNotFoundError as e:
+            st.error(str(e))
+            st.info("The run references a symbol/timeframe folder that is missing locally. Download it with projects/market-data-downloader.")
+            return
+        except Exception as e:
+            st.error(f"Failed to load run candles: {type(e).__name__}: {e}")
+            return
+        if df.empty:
+            st.error("No candles for this run.")
+            return
+
+        params = _candidate_params(candidate)
 
         all_strats = builtin_strategies()
         strat_name = str(params.get("strategy") or candidate.get("strategy") or "")
@@ -934,6 +1187,23 @@ def main() -> None:
                 st.dataframe(pos_df, width="stretch")
 
     if mode in {"Backtest", "Analyze"}:
+        if mode == "Backtest":
+            st.subheader("Backtest")
+            st.caption(f"Vault: {vault_dir}")
+            if selected_vault_champion_path is not None:
+                st.caption(str(selected_vault_champion_path))
+            if not isinstance(selected_vault_champion_payload, dict):
+                st.warning("No champion selected.")
+                return
+
+            with st.expander("Champion payload", expanded=False):
+                st.json(selected_vault_champion_payload)
+
+            if st.button("Run vault champion backtest", type="primary"):
+                with st.spinner("Backtesting vault champion..."):
+                    _run_vault_champion_backtest(champion_payload=selected_vault_champion_payload)
+            return
+
         if mode == "Analyze":
             st.subheader("Analyze")
 
@@ -987,14 +1257,6 @@ def main() -> None:
 
         run_dir = selected_run_dir
         report_payload = selected_report_payload
-
-        if mode == "Backtest":
-            st.subheader("Backtest")
-            st.caption(str(run_dir))
-            if st.button("Run champion backtest", type="primary"):
-                with st.spinner("Backtesting champion..."):
-                    _run_champion_backtest(report_payload=report_payload)
-            return
 
         if mode == "Analyze":
             st.caption(str(run_dir))
@@ -1084,56 +1346,57 @@ def main() -> None:
                 pick_rows = global_lb.to_dict(orient="records")
                 pick_label = lambda r: f"post#{r.get('rank_post_wf')} pre#{r.get('rank_pre_wf')} | {r.get('strategy')} | trial {r.get('trial')}"
                 picked = st.selectbox("Inspect candidate", options=pick_rows, format_func=pick_label)
+                params = _candidate_params(picked)
+
+                st.subheader("Inspect candidate")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("return_test_pct", f"{float(picked.get('return_test_pct') or 0.0):.6f}")
+                c2.metric("dd_test_pct", f"{float(picked.get('dd_test_pct') or 0.0):.6f}")
+                c3.metric("sharpe_test", f"{float(picked.get('sharpe_test') or 0.0):.6f}")
+                c4.metric("trades_test", int(picked.get("trades_test") or 0))
+
+                c5, c6, c7, c8 = st.columns(4)
+                c5.metric("return_train_pct", f"{float(picked.get('return_train_pct') or 0.0):.6f}")
+                c6.metric("dd_train_pct", f"{float(picked.get('dd_train_pct') or 0.0):.6f}")
+                c7.metric("sharpe_train", f"{float(picked.get('sharpe_train') or 0.0):.6f}")
+                c8.metric("trades_train", int(picked.get("trades_train") or 0))
+
+                with st.expander("Candidate params", expanded=True):
+                    st.json(params)
+
                 with st.expander("Candidate JSON", expanded=False):
                     st.json(picked)
 
-                if st.button("Backtest selected candidate", type="secondary"):
-                    with st.spinner("Backtesting candidate..."):
-                        _run_candidate_backtest(candidate=picked, report_payload=report_payload)
+                if st.button("Save retained champion (export to vault)", type="primary"):
+                    vault_path = _save_retained_champion_to_vault(run_dir=run_dir, candidate=picked, report_payload=report_payload)
+                    if vault_path is None:
+                        st.error("Failed to save retained champion")
+                    else:
+                        st.success("Retained champion saved to vault")
+                        st.code(str(vault_path), language="text")
 
-            st.subheader("Leaderboard by strategy")
-            lb_rows = report_payload.get("leaderboard") or []
-            lb = pd.DataFrame(lb_rows)
-            if lb.empty:
-                st.write("No leaderboard rows.")
-            else:
-                base_cols = [
-                    "strategy",
-                    "rank_post_wf",
-                    "rank_pre_wf",
-                    "rank_delta",
-                    "return_test_pct",
-                    "dd_test_pct",
-                    "sharpe_test",
-                    "trades_test",
-                    "return_train_pct",
-                    "dd_train_pct",
-                    "trades_train",
-                    "trial",
-                    "seconds",
-                ]
-                cols = [c for c in base_cols if c in lb.columns]
-                lb_display = lb[cols].copy()
-                for c in ["return_test_pct", "dd_test_pct", "return_train_pct", "dd_train_pct", "seconds", "sharpe_test"]:
-                    if c in lb_display.columns:
-                        lb_display[c] = pd.to_numeric(lb_display[c], errors="coerce").round(3)
-                for c in ["trades_train", "trades_test", "trial", "rank_pre_wf", "rank_post_wf", "rank_delta"]:
-                    if c in lb_display.columns:
-                        lb_display[c] = pd.to_numeric(lb_display[c], errors="coerce").fillna(0).astype("int64")
-                st.dataframe(lb_display, width="stretch", hide_index=True)
-                with st.expander("Leaderboard by strategy (full)", expanded=False):
-                    st.dataframe(lb, width="stretch")
-
-            champion = report_payload.get("champion")
-            st.subheader("Champion")
-            if champion is None:
-                st.write("No champion")
-            else:
-                st.json(champion)
-
-                if st.button("Backtest champion", type="primary"):
-                    with st.spinner("Backtesting champion..."):
-                        _run_champion_backtest(report_payload=report_payload)
+            retained_dir = run_dir / "retained_champions"
+            if retained_dir.exists():
+                try:
+                    retained_files = sorted([p for p in retained_dir.glob("*.json") if p.is_file()], key=lambda p: p.name, reverse=True)
+                except Exception:
+                    retained_files = []
+                if retained_files:
+                    st.subheader("Retained champions (this run)")
+                    st.caption(str(retained_dir))
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "file": p.name,
+                                    "modified": datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
+                                }
+                                for p in retained_files
+                            ]
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                    )
             return
 
     st.subheader("Dataset")
@@ -1455,7 +1718,7 @@ def main() -> None:
                     )
 
                 report_payload = {
-                    "project": "hyperliquid-ohlcv-optimizer-v1",
+                    "project": "ohlcv-optimizer-v1",
                     "version": 1,
                     "saved_at": run_id,
                     "meta": getattr(report, "meta", None),

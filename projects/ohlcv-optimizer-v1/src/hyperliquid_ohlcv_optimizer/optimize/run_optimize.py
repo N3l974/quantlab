@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -88,6 +89,24 @@ def _cfg_from_context(cfg_payload: dict) -> OptimizationConfig:
         ranking_metric=str(cfg_payload.get("ranking_metric", "median_pnl_per_position_test")),
         train_frac=float(cfg_payload.get("train_frac", 0.75)),
     )
+
+
+def _configure_sqlite_pragmas(*, db_path: Path) -> None:
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=60)
+        try:
+            cur = conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL;")
+            cur.execute("PRAGMA synchronous=NORMAL;")
+            cur.execute("PRAGMA busy_timeout=60000;")
+            conn.commit()
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _study_progress(study: optuna.Study) -> tuple[int, int, int, int]:
@@ -284,6 +303,8 @@ def main() -> None:
     db_path = run_dir / "optuna.db"
     storage_url = f"sqlite:///{db_path.as_posix()}"
 
+    _configure_sqlite_pragmas(db_path=db_path)
+
     storage = optuna.storages.RDBStorage(
         str(storage_url),
         engine_kwargs={"connect_args": {"timeout": 60}},
@@ -327,21 +348,13 @@ def main() -> None:
 
     had_keyboard_interrupt = False
     try:
-        global_t0 = time.time()
-
         for si, strat_name in enumerate(strategies):
             if stop_flag.exists():
                 break
 
             remaining = None
-            if cfg.time_budget_seconds is not None:
-                remaining = float(cfg.time_budget_seconds) - float(time.time() - global_t0)
-                if remaining <= 0:
-                    try:
-                        stop_flag.write_text("time_budget", encoding="utf-8")
-                    except Exception:
-                        pass
-                    break
+            if is_time_budget:
+                remaining = float(cfg.time_budget_seconds)
 
             _write_json_atomic(
                 status_path,

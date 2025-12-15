@@ -79,12 +79,20 @@ Colonnes Parquet attendues:
 - `timestamp_ms` (int64 UTC epoch ms)
 - `open`, `high`, `low`, `close`, `volume` (float64)
 
+Sources typiques (selon les données téléchargées):
+- `hyperliquid_perps` (crypto perps)
+- `mt5_icmarkets` (MT5 local, ex: ICMarkets Raw Spread)
+
 ## Utilisation (dans l'UI)
 
 ### Dataset
 - **Source**: `hyperliquid_perps`
 - **Timeframe**: `5m` par défaut (modifiable)
 - **Symbol**: liste auto-détectée depuis le dossier data
+
+Notes:
+- Le menu **Source** liste les dossiers présents sous `data/market_data/ohlcv/`.
+- Pour `mt5_icmarkets`, les symboles/timeframes disponibles dépendent de ce que tu as téléchargé via `projects/market-data-downloader/`.
 
 ### Période
 - Optionnel: `Start` et `End` (format `YYYY-MM-DD`)
@@ -109,6 +117,19 @@ Tu peux activer/désactiver les stratégies dans l'UI.
   - `grid`: adds espacés depuis le dernier fill, TP/SL recalculés sur le prix moyen
   - `martingale`: taille augmente après perte, reset après gain
 - **Selection DD threshold (test) %**: `X` pour le filtre de sélection champion
+
+Notes (brokers FX/CFD type MT5):
+- `fee_bps` et `slippage_bps` sont une approximation des coûts d'exécution.
+- Sur ICMarkets **Raw Spread**, une commission existe (par lot) et peut être approximée en bps.
+- Point de départ (ordre de grandeur, à calibrer): `fee_bps ~= 0.35` et `slippage_bps ~= 1.0..3.0`.
+
+## cTrader (en pause / reprise)
+
+L'objectif est de basculer vers une source cTrader (ex: `ctrader_icmarkets`) pour l'exécution live et/ou le téléchargement OHLCV via cTrader Open API.
+
+Statut:
+- En attente de validation/activation de l'application sur le portail Open API.
+- Les étapes OAuth, endpoints et variables d'environnement sont documentés côté downloader: `projects/market-data-downloader/README.md`.
 
 ### Budget d'optimisation
 - **Max trials**: nombre max d'essais (par stratégie)
