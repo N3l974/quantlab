@@ -22,6 +22,11 @@ class PositionManager:
         self._martingale = MartingaleState()
         self._grid = GridState()
 
+    def grid_adds_done(self) -> int:
+        if self._cfg.mode != "grid":
+            return 0
+        return int(self._grid.adds_done)
+
     def reset_for_new_position(self, entry_price: float) -> None:
         self._grid = GridState(adds_done=0, last_fill_price=entry_price)
 

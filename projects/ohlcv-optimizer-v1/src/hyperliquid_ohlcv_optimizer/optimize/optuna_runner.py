@@ -46,6 +46,8 @@ class OptimizationConfig:
     global_top_k: int = 50
     ranking_metric: str = "median_pnl_per_position_test"
     train_frac: float = 0.75
+    optuna_objective_metric: str = "return_train_pct"
+    require_positive_train_metric_for_test: bool = True
 
 
 @dataclass(frozen=True)
@@ -185,11 +187,101 @@ def _build_global_outputs(*, candidates: pd.DataFrame, config: OptimizationConfi
     return (global_lb, champion_global, champions_by_strategy)
 
 
+def _position_pnl_sequence(trades: pd.DataFrame) -> list[float]:
+    if trades is None or trades.empty:
+        return []
+    if "position_id" not in trades.columns or "pnl" not in trades.columns:
+        return []
+
+    df = trades[["position_id", "pnl"]].copy()
+    if "exit_ts" in trades.columns:
+        df["_sort_ts"] = trades["exit_ts"]
+    elif "entry_ts" in trades.columns:
+        df["_sort_ts"] = trades["entry_ts"]
+    else:
+        df["_sort_ts"] = np.arange(len(df), dtype=np.int64)
+
+    g = df.groupby("position_id", dropna=True)
+    pos = g.agg({"pnl": "sum", "_sort_ts": "max"}).reset_index(drop=True)
+    pos = pos.sort_values("_sort_ts", ascending=True)
+    return [float(x) for x in pos["pnl"].to_list()]
+
+
+def _martingale_usage_metrics(*, trades: pd.DataFrame, multiplier: float, max_steps: int) -> dict:
+    pnls = _position_pnl_sequence(trades)
+    if not pnls:
+        return {
+            "martingale_max_loss_streak": 0,
+            "martingale_max_step_used": 0,
+            "martingale_max_multiplier_used": 1.0,
+        }
+
+    step = 0
+    max_step_used = 0
+    loss_streak = 0
+    max_loss_streak = 0
+
+    for pnl in pnls:
+        max_step_used = max(int(max_step_used), int(step))
+        if float(pnl) < 0:
+            loss_streak += 1
+            max_loss_streak = max(int(max_loss_streak), int(loss_streak))
+            step = min(int(step) + 1, int(max_steps))
+        else:
+            loss_streak = 0
+            step = 0
+
+    try:
+        max_mult = float(multiplier) ** int(max_step_used)
+    except Exception:
+        max_mult = 1.0
+
+    return {
+        "martingale_max_loss_streak": int(max_loss_streak),
+        "martingale_max_step_used": int(max_step_used),
+        "martingale_max_multiplier_used": float(max_mult),
+    }
+
+
+def _grid_usage_metrics(*, trades: pd.DataFrame) -> dict:
+    if trades is None or trades.empty:
+        return {"grid_max_adds_used": 0, "grid_max_multiplier_used": 1.0}
+    if "position_id" not in trades.columns:
+        return {"grid_max_adds_used": 0, "grid_max_multiplier_used": 1.0}
+
+    max_adds = 0
+    max_mult = 1.0
+
+    if "grid_adds_done" in trades.columns:
+        try:
+            max_adds = int(pd.to_numeric(trades["grid_adds_done"], errors="coerce").fillna(0).max())
+        except Exception:
+            max_adds = 0
+
+    if "peak_qty_mult" in trades.columns:
+        try:
+            max_mult = float(pd.to_numeric(trades["peak_qty_mult"], errors="coerce").fillna(1.0).max())
+        except Exception:
+            max_mult = 1.0
+
+    return {"grid_max_adds_used": int(max_adds), "grid_max_multiplier_used": float(max_mult)}
+
+
+def _connect_args_for_storage_url(storage_url: str) -> dict:
+    u = str(storage_url or "").strip().lower()
+    if u.startswith("sqlite"):
+        return {"timeout": 60}
+    if u.startswith("postgres"):
+        return {"connect_timeout": 60}
+    return {}
+
+
 def build_report_from_storage(
     *,
     df: pd.DataFrame,
     config: OptimizationConfig,
     storage_url: str,
+    study_name_prefix: str | None = None,
 ) -> OptimizationReport:
     df_train, df_test = _train_test_split(df, train_frac=float(getattr(config, "train_frac", 0.75)))
 
@@ -205,14 +297,31 @@ def build_report_from_storage(
     candidates_rows: list[dict] = []
     strategies_skipped: dict[str, str] = {}
 
+    pm_usage_cols = [
+        "martingale_max_loss_streak_train",
+        "martingale_max_loss_streak_test",
+        "martingale_max_step_used_train",
+        "martingale_max_step_used_test",
+        "martingale_max_multiplier_used_train",
+        "martingale_max_multiplier_used_test",
+        "grid_max_adds_used_train",
+        "grid_max_adds_used_test",
+        "grid_max_multiplier_used_train",
+        "grid_max_multiplier_used_test",
+    ]
+
+    connect_args = _connect_args_for_storage_url(str(storage_url))
     storage = optuna.storages.RDBStorage(
         str(storage_url),
-        engine_kwargs={"connect_args": {"timeout": 60}},
+        engine_kwargs={"connect_args": connect_args},
     )
 
     for strat in strategies:
         try:
-            study = optuna.load_study(study_name=strat.name, storage=storage)
+            study_name = str(strat.name)
+            if study_name_prefix:
+                study_name = f"{str(study_name_prefix)}.{study_name}"
+            study = optuna.load_study(study_name=study_name, storage=storage)
         except Exception:
             strategies_skipped[strat.name] = "no_study"
             continue
@@ -237,31 +346,95 @@ def build_report_from_storage(
             sig_test = sig_all.iloc[len(df_train) :].reset_index(drop=True)
 
             res_train = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
-            res_test = run_backtest(df=df_test, signal=sig_test, config=bt_cfg)
-
             sharpe_train = _sharpe_from_equity(res_train.equity_curve)
-            sharpe_test = _sharpe_from_equity(res_test.equity_curve)
-
             _, overview_train = summarize_positions(res_train.trades)
-            _, overview_test = summarize_positions(res_test.trades)
-
             trades_train = _count_positions(res_train.trades)
-            trades_test = _count_positions(res_test.trades)
-            eligible = (trades_train >= min_trades_train) and (trades_test >= min_trades_test)
 
             median_pnl_train = float(overview_train.get("median_pnl_per_position", 0.0))
-            median_pnl_test = float(overview_test.get("median_pnl_per_position", 0.0))
             avg_pnl_train = float(overview_train.get("avg_pnl_per_position", 0.0))
-            avg_pnl_test = float(overview_test.get("avg_pnl_per_position", 0.0))
             sharpe_pnl_train = float(overview_train.get("sharpe_pnl_per_position", 0.0))
-            sharpe_pnl_test = float(overview_test.get("sharpe_pnl_per_position", 0.0))
+
+            metric_test = str(getattr(config, "ranking_metric", "median_pnl_per_position_test"))
+            metric_train_name = _metric_train_name(metric_test)
+
+            train_metric_value = 0.0
+            if metric_train_name == "return_train_pct":
+                train_metric_value = float(res_train.net_return_pct)
+            elif metric_train_name == "sharpe_train":
+                train_metric_value = float(sharpe_train)
+            elif metric_train_name == "median_pnl_per_position_train":
+                train_metric_value = float(median_pnl_train)
+            elif metric_train_name == "avg_pnl_per_position_train":
+                train_metric_value = float(avg_pnl_train)
+            elif metric_train_name == "sharpe_pnl_per_position_train":
+                train_metric_value = float(sharpe_pnl_train)
+            elif metric_train_name == "median_pnl_per_position_train_pct":
+                train_metric_value = (float(median_pnl_train) / max(float(config.initial_equity), 1e-12)) * 100.0
+            else:
+                train_metric_value = float(res_train.net_return_pct)
+
+            eligible_train = trades_train >= min_trades_train
+            require_positive = bool(getattr(config, "require_positive_train_metric_for_test", True))
+            do_test_eval = (not require_positive) or (float(train_metric_value) > 0.0)
+
+            if do_test_eval:
+                res_test = run_backtest(df=df_test, signal=sig_test, config=bt_cfg)
+                sharpe_test = _sharpe_from_equity(res_test.equity_curve)
+                _, overview_test = summarize_positions(res_test.trades)
+                trades_test = _count_positions(res_test.trades)
+
+                median_pnl_test = float(overview_test.get("median_pnl_per_position", 0.0))
+                avg_pnl_test = float(overview_test.get("avg_pnl_per_position", 0.0))
+                sharpe_pnl_test = float(overview_test.get("sharpe_pnl_per_position", 0.0))
+                dd_test_pct = float(res_test.max_drawdown_pct)
+                ret_test_pct = float(res_test.net_return_pct)
+            else:
+                sharpe_test = float("nan")
+                trades_test = 0
+                median_pnl_test = float("nan")
+                avg_pnl_test = float("nan")
+                sharpe_pnl_test = float("nan")
+                dd_test_pct = float("nan")
+                ret_test_pct = float("nan")
+
+            eligible = bool(eligible_train)
+
+            pm_mode_used = str(getattr(bt_cfg.pm, "mode", "none"))
+            if pm_mode_used == "martingale" and bt_cfg.pm.martingale is not None:
+                mm_train = _martingale_usage_metrics(
+                    trades=res_train.trades,
+                    multiplier=float(bt_cfg.pm.martingale.multiplier),
+                    max_steps=int(bt_cfg.pm.martingale.max_steps),
+                )
+                if do_test_eval:
+                    mm_test = _martingale_usage_metrics(
+                        trades=res_test.trades,
+                        multiplier=float(bt_cfg.pm.martingale.multiplier),
+                        max_steps=int(bt_cfg.pm.martingale.max_steps),
+                    )
+                else:
+                    mm_test = {"martingale_max_loss_streak": 0, "martingale_max_step_used": 0, "martingale_max_multiplier_used": 1.0}
+            else:
+                mm_train = {"martingale_max_loss_streak": 0, "martingale_max_step_used": 0, "martingale_max_multiplier_used": 1.0}
+                mm_test = {"martingale_max_loss_streak": 0, "martingale_max_step_used": 0, "martingale_max_multiplier_used": 1.0}
+
+            if pm_mode_used == "grid":
+                gm_train = _grid_usage_metrics(trades=res_train.trades)
+                if do_test_eval:
+                    gm_test = _grid_usage_metrics(trades=res_test.trades)
+                else:
+                    gm_test = {"grid_max_adds_used": 0, "grid_max_multiplier_used": 1.0}
+            else:
+                gm_train = {"grid_max_adds_used": 0, "grid_max_multiplier_used": 1.0}
+                gm_test = {"grid_max_adds_used": 0, "grid_max_multiplier_used": 1.0}
 
             row = {
                 "strategy": strat.name,
                 "return_train_pct": res_train.net_return_pct,
                 "dd_train_pct": res_train.max_drawdown_pct,
-                "return_test_pct": res_test.net_return_pct,
-                "dd_test_pct": res_test.max_drawdown_pct,
+                "return_test_pct": ret_test_pct,
+                "dd_test_pct": dd_test_pct,
+                "tested": bool(do_test_eval) and (int(trades_test) >= int(min_trades_test)),
                 "sharpe_train": sharpe_train,
                 "sharpe_test": sharpe_test,
                 "median_pnl_per_position_train": median_pnl_train,
@@ -276,6 +449,16 @@ def build_report_from_storage(
                 "trades_test": trades_test,
                 "eligible": eligible,
                 "trial": tr.number,
+                "martingale_max_loss_streak_train": int(mm_train.get("martingale_max_loss_streak", 0)),
+                "martingale_max_loss_streak_test": int(mm_test.get("martingale_max_loss_streak", 0)),
+                "martingale_max_step_used_train": int(mm_train.get("martingale_max_step_used", 0)),
+                "martingale_max_step_used_test": int(mm_test.get("martingale_max_step_used", 0)),
+                "martingale_max_multiplier_used_train": float(mm_train.get("martingale_max_multiplier_used", 1.0)),
+                "martingale_max_multiplier_used_test": float(mm_test.get("martingale_max_multiplier_used", 1.0)),
+                "grid_max_adds_used_train": int(gm_train.get("grid_max_adds_used", 0)),
+                "grid_max_adds_used_test": int(gm_test.get("grid_max_adds_used", 0)),
+                "grid_max_multiplier_used_train": float(gm_train.get("grid_max_multiplier_used", 1.0)),
+                "grid_max_multiplier_used_test": float(gm_test.get("grid_max_multiplier_used", 1.0)),
             }
             for k, v in tr.params.items():
                 row[k] = v
@@ -286,7 +469,9 @@ def build_report_from_storage(
     if not candidates.empty:
         candidates = _add_rank_columns(df=candidates, config=config)
 
-    global_lb, champion_global, champions_by_strategy = _build_global_outputs(candidates=candidates, config=config)
+    candidates_for_global = candidates.drop(columns=pm_usage_cols, errors="ignore") if candidates is not None else candidates
+
+    global_lb, champion_global, champions_by_strategy = _build_global_outputs(candidates=candidates_for_global, config=config)
     leaderboard = pd.DataFrame(list(champions_by_strategy.values())) if champions_by_strategy else pd.DataFrame()
 
     return OptimizationReport(
@@ -633,9 +818,10 @@ def run_optimization(
             nonlocal last_printed_best
             if best is not None and best.values is not None and best.number != last_printed_best:
                 last_printed_best = int(best.number)
+                obj_name = str(getattr(config, "optuna_objective_metric", "return_train_pct"))
                 msg = (
                     f"[{strat.name}] new best trial={int(best.number)} "
-                    f"train_return={float(best.values[0]):.6f} train_dd={float(best.values[1]):.6f}"
+                    f"train_obj({obj_name})={float(best.values[0]):.6f} train_dd={float(best.values[1]):.6f}"
                 )
                 if int(config.n_jobs) == 1 and best.number in best_eval_cache:
                     ev = best_eval_cache[best.number]
@@ -665,7 +851,30 @@ def run_optimization(
             sig_train = sig_all.iloc[: len(df_train)].reset_index(drop=True)
             res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
 
-            return (res.net_return_pct, res.max_drawdown_pct)
+            metric = str(getattr(config, "optuna_objective_metric", "return_train_pct"))
+            v = 0.0
+            if metric == "return_train_pct":
+                v = float(res.net_return_pct)
+            elif metric == "sharpe_train":
+                v = float(_sharpe_from_equity(np.asarray(res.equity_curve, dtype="float64")))
+            else:
+                _, ov = summarize_positions(res.trades)
+                if metric == "median_pnl_per_position_train":
+                    v = float(ov.get("median_pnl_per_position", 0.0))
+                elif metric == "avg_pnl_per_position_train":
+                    v = float(ov.get("avg_pnl_per_position", 0.0))
+                elif metric == "sharpe_pnl_per_position_train":
+                    v = float(ov.get("sharpe_pnl_per_position", 0.0))
+                elif metric == "median_pnl_per_position_train_pct":
+                    v0 = float(ov.get("median_pnl_per_position", 0.0))
+                    v = (v0 / max(float(config.initial_equity), 1e-12)) * 100.0
+                elif metric == "avg_pnl_per_position_train_pct":
+                    v0 = float(ov.get("avg_pnl_per_position", 0.0))
+                    v = (v0 / max(float(config.initial_equity), 1e-12)) * 100.0
+                else:
+                    v = float(res.net_return_pct)
+
+            return (float(v), float(res.max_drawdown_pct))
 
         try:
             study.optimize(

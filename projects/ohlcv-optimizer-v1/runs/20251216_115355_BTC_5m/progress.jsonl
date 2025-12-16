@@ -1,0 +1,7 @@
+{"t": 1765871636.5177188, "event": "strategy_start", "strategy": "ma_cross"}
+{"t": 1765871640.6841083, "event": "best_update", "strategy": "ma_cross", "trial": 2, "train_objective_metric": "return_train_pct", "train_objective": -62.30215705687544, "train_dd": 62.68214920027981}
+{"t": 1765871642.755627, "event": "best_update", "strategy": "ma_cross", "trial": 8, "train_objective_metric": "return_train_pct", "train_objective": -8.937900370597507, "train_dd": 9.436061176943559}
+{"t": 1765871644.8465388, "event": "best_update", "strategy": "ma_cross", "trial": 10, "train_objective_metric": "return_train_pct", "train_objective": -2.659572405909061, "train_dd": 5.561246455506473}
+{"t": 1765871693.4918947, "event": "best_update", "strategy": "ma_cross", "trial": 116, "train_objective_metric": "return_train_pct", "train_objective": 0.02476315462007772, "train_dd": 5.2076243074592075}
+{"t": 1765871697.768408, "event": "best_update", "strategy": "ma_cross", "trial": 124, "train_objective_metric": "return_train_pct", "train_objective": 1.938641904681404, "train_dd": 4.401042604350634}
+{"t": 1765871731.6718924, "event": "strategy_end", "strategy": "ma_cross"}

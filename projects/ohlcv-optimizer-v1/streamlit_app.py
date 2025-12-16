@@ -618,6 +618,23 @@ def main() -> None:
                     help="Number of candidates kept in the global leaderboard (cross-strategy).",
                 )
             )
+
+            optuna_objective_metric = str(
+                st.selectbox(
+                    "Optuna objective metric (train)",
+                    options=[
+                        "return_train_pct",
+                        "sharpe_train",
+                        "median_pnl_per_position_train",
+                        "median_pnl_per_position_train_pct",
+                        "avg_pnl_per_position_train",
+                        "avg_pnl_per_position_train_pct",
+                        "sharpe_pnl_per_position_train",
+                    ],
+                    index=0,
+                    help="This metric is optimized on TRAIN during Optuna trials (first objective). Drawdown is still minimized as the second objective.",
+                )
+            )
             ranking_metric = str(
                 st.selectbox(
                     "Ranking metric (post-walkforward)",
@@ -630,12 +647,31 @@ def main() -> None:
                         "return_test_pct",
                         "sharpe_test",
                     ],
-                    index=0,
+                    index=5,
                     help="This metric is used to rank candidates on TEST (post-walkforward). The same metric with _train is used for pre-walkforward ranks.",
+                )
+            )
+
+            require_positive_train_metric_for_test = bool(
+                st.checkbox(
+                    "Only test candidates with positive train metric",
+                    value=True,
+                    help=(
+                        "If enabled, a candidate is backtested on TEST only if the TRAIN version of the ranking metric is > 0. "
+                        "Example: ranking_metric=return_test_pct => require return_train_pct > 0."
+                    ),
                 )
             )
         else:
             st.caption("This mode loads settings from a saved run (report.json).")
+            optuna_objective_metric = str(
+                (st.session_state.get("opt_context") or {}).get("optuna_objective_metric") or "return_train_pct"
+            )
+            require_positive_train_metric_for_test = bool(
+                (st.session_state.get("opt_context") or {}).get("require_positive_train_metric_for_test")
+                if (st.session_state.get("opt_context") or {}).get("require_positive_train_metric_for_test") is not None
+                else True
+            )
 
     with st.sidebar.expander("Info", expanded=False):
         st.caption("Position management is optimized automatically (none/grid/martingale).")
@@ -659,8 +695,9 @@ def main() -> None:
             pareto_candidates_max=int(cfg_payload.get("pareto_candidates_max", 50)),
             candidate_pool=str(cfg_payload.get("candidate_pool", "pareto")),
             global_top_k=int(cfg_payload.get("global_top_k", 50)),
-            ranking_metric=str(cfg_payload.get("ranking_metric", "median_pnl_per_position_test")),
+            ranking_metric=str(cfg_payload.get("ranking_metric", "return_test_pct")),
             train_frac=float(cfg_payload.get("train_frac", 0.75)),
+            require_positive_train_metric_for_test=bool(cfg_payload.get("require_positive_train_metric_for_test", True)),
         )
 
     def _rebuild_report_from_optuna_db(*, run_dir: Path) -> dict | None:
@@ -902,6 +939,16 @@ def main() -> None:
             "median_pnl_per_position_test_pct",
             "trades_train",
             "trades_test",
+            "martingale_max_loss_streak_train",
+            "martingale_max_loss_streak_test",
+            "martingale_max_step_used_train",
+            "martingale_max_step_used_test",
+            "martingale_max_multiplier_used_train",
+            "martingale_max_multiplier_used_test",
+            "grid_max_adds_used_train",
+            "grid_max_adds_used_test",
+            "grid_max_multiplier_used_train",
+            "grid_max_multiplier_used_test",
             "eligible",
             "trial",
             "seconds",
@@ -1271,6 +1318,27 @@ def main() -> None:
             c4.metric("Saved at", str(report_payload.get("saved_at")))
 
             with st.expander("Report config", expanded=False):
+                start_ms = data_info.get("start_ms")
+                end_ms = data_info.get("end_ms")
+                if start_ms is not None and end_ms is not None:
+                    try:
+                        start_dt = pd.to_datetime(int(start_ms), unit="ms", utc=True)
+                        end_dt = pd.to_datetime(int(end_ms), unit="ms", utc=True)
+                        days = max(0.0, float((end_dt - start_dt).total_seconds()) / 86400.0)
+                        st.caption(f"Data period: {start_dt.isoformat()} → {end_dt.isoformat()} (days={days:.2f})")
+                    except Exception:
+                        pass
+
+                train_frac_used = float(cfg_info.get("train_frac", 0.75) or 0.75)
+                candles_total = int(data_info.get("candles_total", 0) or 0)
+                candles_train = int(candles_total * float(train_frac_used)) if candles_total > 0 else 0
+                candles_test = int(max(0, candles_total - candles_train)) if candles_total > 0 else 0
+
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Train fraction", f"{train_frac_used:.2f}")
+                k2.metric("Candles train (est.)", int(candles_train))
+                k3.metric("Candles test (est.)", int(candles_test))
+
                 st.json(cfg_info)
 
             st.subheader("Global leaderboard")
@@ -1317,7 +1385,12 @@ def main() -> None:
                     "dd_test_pct",
                     "trial",
                 ]
-                cols = [c for c in base_cols if c in global_lb.columns]
+                cols = []
+                seen = set()
+                for c in base_cols:
+                    if c in global_lb.columns and c not in seen:
+                        cols.append(c)
+                        seen.add(c)
                 glb_display = global_lb[cols].copy()
 
                 if sort_mode == "Pre-WF (train)" and "rank_pre_wf" in glb_display.columns:
@@ -1349,17 +1422,146 @@ def main() -> None:
                 params = _candidate_params(picked)
 
                 st.subheader("Inspect candidate")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("return_test_pct", f"{float(picked.get('return_test_pct') or 0.0):.6f}")
-                c2.metric("dd_test_pct", f"{float(picked.get('dd_test_pct') or 0.0):.6f}")
-                c3.metric("sharpe_test", f"{float(picked.get('sharpe_test') or 0.0):.6f}")
-                c4.metric("trades_test", int(picked.get("trades_test") or 0))
+                st.caption(
+                    f"{str(picked.get('strategy'))} | trial {picked.get('trial')} | post#{picked.get('rank_post_wf')} pre#{picked.get('rank_pre_wf')}"
+                )
 
-                c5, c6, c7, c8 = st.columns(4)
-                c5.metric("return_train_pct", f"{float(picked.get('return_train_pct') or 0.0):.6f}")
-                c6.metric("dd_train_pct", f"{float(picked.get('dd_train_pct') or 0.0):.6f}")
-                c7.metric("sharpe_train", f"{float(picked.get('sharpe_train') or 0.0):.6f}")
-                c8.metric("trades_train", int(picked.get("trades_train") or 0))
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("Return (test)", f"{float(picked.get('return_test_pct') or 0.0):.2f}%")
+                k2.metric("Max DD (test)", f"{float(picked.get('dd_test_pct') or 0.0):.2f}%")
+                k3.metric("Sharpe (test)", f"{float(picked.get('sharpe_test') or 0.0):.2f}")
+                k4.metric("Trades (test)", int(picked.get("trades_test") or 0))
+
+                k5, k6, k7, k8 = st.columns(4)
+                k5.metric("Return (train)", f"{float(picked.get('return_train_pct') or 0.0):.2f}%")
+                k6.metric("Max DD (train)", f"{float(picked.get('dd_train_pct') or 0.0):.2f}%")
+                k7.metric("Sharpe (train)", f"{float(picked.get('sharpe_train') or 0.0):.2f}")
+                k8.metric("Trades (train)", int(picked.get("trades_train") or 0))
+
+                pm_mode_val = str(params.get("pm_mode") or picked.get("pm_mode") or "")
+                if pm_mode_val:
+                    p1, p2, p3, p4 = st.columns(4)
+                    p1.metric("PM mode", pm_mode_val)
+                    if pm_mode_val == "martingale":
+                        p2.metric("Max loss streak (test)", int(picked.get("martingale_max_loss_streak_test") or 0))
+                        p3.metric("Max mult used (test)", f"{float(picked.get('martingale_max_multiplier_used_test') or 1.0):.2f}x")
+                        p4.metric("Max loss streak (train)", int(picked.get("martingale_max_loss_streak_train") or 0))
+                    elif pm_mode_val == "grid":
+                        p2.metric("Max adds used (test)", int(picked.get("grid_max_adds_used_test") or 0))
+                        p3.metric("Max size mult (test)", f"{float(picked.get('grid_max_multiplier_used_test') or 1.0):.2f}x")
+                        p4.metric("Max adds used (train)", int(picked.get("grid_max_adds_used_train") or 0))
+
+                analytics_dir = run_dir / "candidate_analytics"
+                try:
+                    strat_name = str(picked.get("strategy") or "")
+                    trial_num = int(picked.get("trial") or 0)
+                except Exception:
+                    strat_name = str(picked.get("strategy") or "")
+                    trial_num = 0
+
+                analytics_payload = None
+                if strat_name and analytics_dir.exists():
+                    p = analytics_dir / f"{_safe_name(strat_name)}__trial_{int(trial_num)}.json"
+                    if p.exists():
+                        try:
+                            analytics_payload = json.loads(p.read_text(encoding="utf-8"))
+                        except Exception:
+                            analytics_payload = None
+
+                if not isinstance(analytics_payload, dict):
+                    st.caption("No precomputed candidate analytics for this run (older run).")
+                else:
+                    def _equity_df(ts_ms: list[int], eq: list[float]) -> pd.DataFrame:
+                        if not ts_ms or not eq:
+                            return pd.DataFrame()
+                        n = min(int(len(ts_ms)), int(len(eq)))
+                        if n <= 0:
+                            return pd.DataFrame()
+                        ts = pd.to_datetime(pd.Series(ts_ms[:n]).astype("int64"), unit="ms", utc=True)
+                        out = pd.DataFrame({"timestamp": ts.to_numpy(), "equity": pd.Series(eq[:n]).astype("float64").to_numpy()})
+                        out = out.set_index("timestamp")
+                        out["dd_pct"] = (out["equity"] / out["equity"].cummax().replace(0, 1e-12) - 1.0) * 100.0
+                        return out
+
+                    def _render_seg(seg_key: str, title: str) -> None:
+                        seg = (analytics_payload.get("segments") or {}).get(seg_key) or {}
+                        if seg.get("empty"):
+                            st.info("Empty segment")
+                            return
+                        if seg.get("error"):
+                            st.error("Analytics error")
+                            return
+
+                        period_start_ms = seg.get("period_start_ms")
+                        period_end_ms = seg.get("period_end_ms")
+
+                        ts_ms = seg.get("ts_ms") or []
+                        eq = seg.get("equity") or []
+                        kpis = seg.get("kpis") or {}
+                        overview = seg.get("overview") or {}
+                        positions_rows = seg.get("positions") or []
+
+                        r1, r2, r3, r4, r5 = st.columns(5)
+                        r1.metric("Return (period)", f"{float(kpis.get('return_period_pct') or 0.0):.2f}%")
+                        r2.metric("Return annualized", f"{float(kpis.get('return_annualized_pct') or 0.0):.2f}%")
+                        r3.metric("Max DD", f"{float(kpis.get('max_drawdown_pct') or 0.0):.2f}%")
+                        pf = kpis.get("profit_factor")
+                        try:
+                            pf_f = float(pf)
+                        except Exception:
+                            pf_f = 0.0
+                        r4.metric("Profit factor", "∞" if pf_f == float("inf") else f"{pf_f:.2f}")
+                        r5.metric("Sharpe (equity)", f"{float(kpis.get('sharpe_equity') or 0.0):.2f}")
+
+                        s1, s2, s3, s4, s5 = st.columns(5)
+                        s1.metric("Positions", int(overview.get("positions", 0) or 0))
+                        s2.metric("Taux de réussite", f"{100.0 * float(overview.get('win_rate', 0.0) or 0.0):.1f}%")
+                        s3.metric("TP1 hit rate", f"{100.0 * float(overview.get('tp1_hit_rate', 0.0) or 0.0):.1f}%")
+                        s4.metric("Avg fills/pos", f"{float(overview.get('avg_fills_per_position', 0.0) or 0.0):.2f}")
+                        s5.metric("Period days", f"{float(kpis.get('period_days') or 0.0):.2f}")
+
+                        if period_start_ms is not None and period_end_ms is not None:
+                            try:
+                                p_start = pd.to_datetime(int(period_start_ms), unit="ms", utc=True)
+                                p_end = pd.to_datetime(int(period_end_ms), unit="ms", utc=True)
+                                p_days = max(0.0, float((p_end - p_start).total_seconds()) / 86400.0)
+                                st.caption(f"Period: {p_start.isoformat()} → {p_end.isoformat()} (days={p_days:.2f})")
+                            except Exception:
+                                pass
+
+                        t1, t2, t3, t4, t5 = st.columns(5)
+                        t1.metric("Median PnL/pos", f"{float(overview.get('median_pnl_per_position', 0.0) or 0.0):.4f}")
+                        t2.metric("Avg PnL/pos", f"{float(overview.get('avg_pnl_per_position', 0.0) or 0.0):.4f}")
+                        t3.metric("TP1 PnL share", f"{100.0 * float(overview.get('tp1_pnl_share', 0.0) or 0.0):.1f}%")
+                        t4.metric("Sharpe (pos PnL)", f"{float(overview.get('sharpe_pnl_per_position', 0.0) or 0.0):.2f}")
+                        t5.metric("Candles (downsampled)", int(min(len(ts_ms), len(eq))))
+
+                        eq_df = _equity_df(ts_ms, eq)
+                        if not eq_df.empty:
+                            st.subheader("Equity curve")
+                            st.line_chart(eq_df[["equity"]], height=240)
+                            st.subheader("Drawdown (%)")
+                            st.line_chart(eq_df[["dd_pct"]], height=180)
+
+                        with st.expander("Exit reasons (final)", expanded=False):
+                            st.json(overview.get("final_exit_reason_dist", {}))
+
+                        with st.expander("Positions table", expanded=False):
+                            try:
+                                pos_df = pd.DataFrame(positions_rows)
+                            except Exception:
+                                pos_df = pd.DataFrame()
+                            if not pos_df.empty:
+                                st.dataframe(pos_df, width="stretch", hide_index=True)
+
+                    st.subheader("Candidate analytics")
+                    tabs = st.tabs(["Test (post-WF)", "Train (pre-WF)", "Full"])
+                    with tabs[0]:
+                        _render_seg("test", "Test")
+                    with tabs[1]:
+                        _render_seg("train", "Train")
+                    with tabs[2]:
+                        _render_seg("full", "Full")
 
                 with st.expander("Candidate params", expanded=True):
                     st.json(params)
@@ -1567,6 +1769,7 @@ def main() -> None:
                 candidate_pool=str(candidate_pool),
                 global_top_k=int(global_top_k),
                 ranking_metric=str(ranking_metric),
+                require_positive_train_metric_for_test=bool(require_positive_train_metric_for_test),
             )
 
             run_id = time.strftime("%Y%m%d_%H%M%S")
@@ -1624,6 +1827,14 @@ def main() -> None:
                             "fee_bps": cfg.fee_bps,
                             "slippage_bps": cfg.slippage_bps,
                             "dd_threshold_pct": cfg.dd_threshold_pct,
+                            "storage_url": str(
+                                os.environ.get(
+                                    "OPTUNA_STORAGE_URL",
+                                    "postgresql+psycopg2://postgres:optuna@localhost:5432/optuna",
+                                )
+                            ),
+                            "optuna_objective_metric": str(optuna_objective_metric),
+                            "require_positive_train_metric_for_test": bool(require_positive_train_metric_for_test),
                             "min_trades_train": cfg.min_trades_train,
                             "min_trades_test": cfg.min_trades_test,
                             "max_trials": cfg.max_trials,

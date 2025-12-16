@@ -10,13 +10,16 @@ import optuna
 import pandas as pd
 
 from hyperliquid_ohlcv_optimizer.backtest.backtester import run_backtest
+from hyperliquid_ohlcv_optimizer.backtest.trade_analysis import summarize_positions
 from hyperliquid_ohlcv_optimizer.data.ohlcv_loader import load_ohlcv
 from hyperliquid_ohlcv_optimizer.optimize.optuna_runner import (
     OptimizationConfig,
     _build_backtest_config,
     _make_sampler,
+    _sharpe_from_equity,
     _train_test_split,
 )
+from hyperliquid_ohlcv_optimizer.optimize.run_optimize import _connect_args_for_storage_url
 from hyperliquid_ohlcv_optimizer.strategies.base import StrategyContext
 from hyperliquid_ohlcv_optimizer.strategies.registry import builtin_strategies
 
@@ -69,6 +72,7 @@ def main() -> None:
         global_top_k=int(ctx["config"].get("global_top_k", 50)),
         ranking_metric=str(ctx["config"].get("ranking_metric", "median_pnl_per_position_test")),
         train_frac=float(ctx["config"].get("train_frac", 0.75)),
+        optuna_objective_metric=str(ctx["config"].get("optuna_objective_metric", "return_train_pct")),
     )
 
     df = _load_filtered_df(
@@ -88,10 +92,7 @@ def main() -> None:
         raise SystemExit(f"Unknown strategy: {args.strategy}")
 
     sampler = _make_sampler(seed=int(args.seed))
-    storage = optuna.storages.RDBStorage(
-        str(args.storage_url),
-        engine_kwargs={"connect_args": {"timeout": 60}},
-    )
+    storage = optuna.storages.RDBStorage(str(args.storage_url), engine_kwargs={"connect_args": _connect_args_for_storage_url(str(args.storage_url))})
     study = optuna.create_study(
         directions=["maximize", "minimize"],
         sampler=sampler,
@@ -133,7 +134,36 @@ def main() -> None:
         sig_all = strat.compute_signal(df, trial.params, st_ctx)
         sig_train = sig_all.iloc[: len(df_train)].reset_index(drop=True)
         res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
-        return (res.net_return_pct, res.max_drawdown_pct)
+
+        metric = str(getattr(base, "optuna_objective_metric", "return_train_pct"))
+        v = 0.0
+        if metric == "return_train_pct":
+            v = float(res.net_return_pct)
+        elif metric == "sharpe_train":
+            try:
+                import numpy as np
+
+                v = float(_sharpe_from_equity(np.asarray(res.equity_curve, dtype="float64")))
+            except Exception:
+                v = 0.0
+        else:
+            _, ov = summarize_positions(res.trades)
+            if metric == "median_pnl_per_position_train":
+                v = float(ov.get("median_pnl_per_position", 0.0))
+            elif metric == "avg_pnl_per_position_train":
+                v = float(ov.get("avg_pnl_per_position", 0.0))
+            elif metric == "sharpe_pnl_per_position_train":
+                v = float(ov.get("sharpe_pnl_per_position", 0.0))
+            elif metric == "median_pnl_per_position_train_pct":
+                v0 = float(ov.get("median_pnl_per_position", 0.0))
+                v = (v0 / max(float(base.initial_equity), 1e-12)) * 100.0
+            elif metric == "avg_pnl_per_position_train_pct":
+                v0 = float(ov.get("avg_pnl_per_position", 0.0))
+                v = (v0 / max(float(base.initial_equity), 1e-12)) * 100.0
+            else:
+                v = float(res.net_return_pct)
+
+        return (float(v), float(res.max_drawdown_pct))
 
     study.optimize(
         objective,

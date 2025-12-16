@@ -1,0 +1,6 @@
+{"t": 1765867445.159302, "event": "strategy_start", "strategy": "rsi_reversion"}
+{"t": 1765867447.2387714, "event": "best_update", "strategy": "rsi_reversion", "trial": 10, "train_objective_metric": "return_train_pct", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765867457.7534873, "event": "best_update", "strategy": "rsi_reversion", "trial": 157, "train_objective_metric": "return_train_pct", "train_objective": 3.2837316717656995, "train_dd": 0.0}
+{"t": 1765867466.5504496, "event": "best_update", "strategy": "rsi_reversion", "trial": 313, "train_objective_metric": "return_train_pct", "train_objective": 5.47403527088588, "train_dd": 0.0}
+{"t": 1765867487.628911, "event": "best_update", "strategy": "rsi_reversion", "trial": 629, "train_objective_metric": "return_train_pct", "train_objective": 9.190982100871214, "train_dd": 0.0}
+{"t": 1765867511.996257, "event": "strategy_end", "strategy": "rsi_reversion"}

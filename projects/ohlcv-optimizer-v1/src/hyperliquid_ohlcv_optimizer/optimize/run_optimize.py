@@ -18,7 +18,15 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from hyperliquid_ohlcv_optimizer.data.ohlcv_loader import load_ohlcv
-from hyperliquid_ohlcv_optimizer.optimize.optuna_runner import OptimizationConfig, build_report_from_storage
+from hyperliquid_ohlcv_optimizer.backtest.backtester import run_backtest
+from hyperliquid_ohlcv_optimizer.backtest.trade_analysis import summarize_positions
+from hyperliquid_ohlcv_optimizer.optimize.optuna_runner import (
+    OptimizationConfig,
+    build_backtest_config_from_params,
+    build_report_from_storage,
+)
+from hyperliquid_ohlcv_optimizer.strategies.base import StrategyContext
+from hyperliquid_ohlcv_optimizer.strategies.registry import builtin_strategies
 
 
 def _project_root() -> Path:
@@ -54,8 +62,33 @@ def _read_json(path: Path) -> dict:
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    data = json.dumps(payload, indent=2, ensure_ascii=False)
+    try:
+        tmp.write_text(data, encoding="utf-8")
+    except Exception:
+        try:
+            path.write_text(data, encoding="utf-8")
+        except Exception:
+            pass
+        return
+
+    for i in range(25):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            time.sleep(0.05 * float(i + 1))
+        except Exception:
+            break
+
+    try:
+        path.write_text(data, encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        tmp.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _load_filtered_df(*, data_root: str, source: str, symbol: str, timeframe: str, start_ms: int | None, end_ms: int | None) -> pd.DataFrame:
@@ -88,6 +121,7 @@ def _cfg_from_context(cfg_payload: dict) -> OptimizationConfig:
         global_top_k=int(cfg_payload.get("global_top_k", 50)),
         ranking_metric=str(cfg_payload.get("ranking_metric", "median_pnl_per_position_test")),
         train_frac=float(cfg_payload.get("train_frac", 0.75)),
+        require_positive_train_metric_for_test=bool(cfg_payload.get("require_positive_train_metric_for_test", True)),
     )
 
 
@@ -107,6 +141,15 @@ def _configure_sqlite_pragmas(*, db_path: Path) -> None:
                 pass
     except Exception:
         pass
+
+
+def _connect_args_for_storage_url(storage_url: str) -> dict:
+    u = str(storage_url or "").strip().lower()
+    if u.startswith("sqlite"):
+        return {"timeout": 60}
+    if u.startswith("postgres"):
+        return {"connect_timeout": 60}
+    return {}
 
 
 def _study_progress(study: optuna.Study) -> tuple[int, int, int, int]:
@@ -239,6 +282,7 @@ def _save_report_artifacts(*, run_dir: Path, report, ctx: dict, cfg: Optimizatio
             "global_top_k": cfg.global_top_k,
             "ranking_metric": cfg.ranking_metric,
             "train_frac": cfg.train_frac,
+            "require_positive_train_metric_for_test": bool(getattr(cfg, "require_positive_train_metric_for_test", True)),
             "multiprocess": True,
             "workers": int((ctx.get("config") or {}).get("workers", 1) or 1),
         },
@@ -260,6 +304,262 @@ def _save_report_artifacts(*, run_dir: Path, report, ctx: dict, cfg: Optimizatio
         )
     except Exception:
         pass
+
+
+def _safe_name(value: str) -> str:
+    s = str(value or "").strip()
+    out = []
+    for ch in s:
+        if ch.isalnum() or ch in {"_", "-", "."}:
+            out.append(ch)
+        else:
+            out.append("_")
+    return "".join(out) or "unknown"
+
+
+def _json_default(v):
+    try:
+        if hasattr(v, "item"):
+            return v.item()
+    except Exception:
+        pass
+    try:
+        if isinstance(v, pd.Timestamp):
+            return v.isoformat()
+    except Exception:
+        pass
+    return str(v)
+
+
+def _candidate_params_from_row(row: dict) -> dict:
+    drop_keys = {
+        "return_train_pct",
+        "dd_train_pct",
+        "return_test_pct",
+        "dd_test_pct",
+        "sharpe_train",
+        "sharpe_test",
+        "median_pnl_per_position_train",
+        "median_pnl_per_position_test",
+        "avg_pnl_per_position_train",
+        "avg_pnl_per_position_test",
+        "sharpe_pnl_per_position_train",
+        "sharpe_pnl_per_position_test",
+        "median_pnl_per_position_train_pct",
+        "median_pnl_per_position_test_pct",
+        "trades_train",
+        "trades_test",
+        "martingale_max_loss_streak_train",
+        "martingale_max_loss_streak_test",
+        "martingale_max_step_used_train",
+        "martingale_max_step_used_test",
+        "martingale_max_multiplier_used_train",
+        "martingale_max_multiplier_used_test",
+        "grid_max_adds_used_train",
+        "grid_max_adds_used_test",
+        "grid_max_multiplier_used_train",
+        "grid_max_multiplier_used_test",
+        "eligible",
+        "trial",
+        "seconds",
+        "rank_pre_wf",
+        "rank_post_wf",
+        "rank_delta",
+    }
+    params: dict = {}
+    for k, v in (row or {}).items():
+        if k in drop_keys:
+            continue
+        if v is None:
+            continue
+        if isinstance(v, float) and pd.isna(v):
+            continue
+        params[str(k)] = v
+    return params
+
+
+def _profit_factor(pos_df: pd.DataFrame) -> float:
+    if pos_df is None or pos_df.empty or "pnl_total" not in pos_df.columns:
+        return 0.0
+    pnl = pd.to_numeric(pos_df["pnl_total"], errors="coerce").fillna(0.0)
+    gross_profit = float(pnl[pnl > 0].sum())
+    gross_loss = float((-pnl[pnl < 0]).sum())
+    if gross_loss <= 1e-12:
+        return float("inf") if gross_profit > 0 else 0.0
+    return gross_profit / gross_loss
+
+
+def _period_days_from_df(df_slice: pd.DataFrame) -> float:
+    if df_slice is None or df_slice.empty or "timestamp_ms" not in df_slice.columns:
+        return 1e-9
+    start_ms = int(df_slice["timestamp_ms"].iloc[0])
+    end_ms = int(df_slice["timestamp_ms"].iloc[-1])
+    return max(1e-9, float(end_ms - start_ms) / 86_400_000.0)
+
+
+def _ann_return_from_equity(eq: list[float], *, period_days: float) -> float:
+    if not eq:
+        return 0.0
+    start_e = float(eq[0])
+    end_e = float(eq[-1])
+    if start_e <= 0:
+        return 0.0
+    total = end_e / max(start_e, 1e-12)
+    return float(total ** (365.0 / max(float(period_days), 1e-9)) - 1.0)
+
+
+def _sharpe_from_equity(eq: list[float]) -> float:
+    try:
+        s = pd.Series(eq).astype("float64")
+    except Exception:
+        return 0.0
+    if len(s) < 2:
+        return 0.0
+    prev = s.shift(1)
+    rets = (s - prev) / prev.replace(0, 1e-12)
+    rets = rets.dropna()
+    if rets.empty:
+        return 0.0
+    mu = float(rets.mean())
+    sigma = float(rets.std(ddof=0))
+    if sigma <= 1e-12:
+        return 0.0
+    return float((mu / sigma) * (float(len(rets)) ** 0.5))
+
+
+def _downsample_ts_eq(*, ts_ms: list[int], eq: list[float], max_points: int = 3000) -> tuple[list[int], list[float]]:
+    n = min(int(len(ts_ms)), int(len(eq)))
+    if n <= 0:
+        return ([], [])
+    if n <= int(max_points):
+        return (ts_ms[:n], eq[:n])
+    step = max(1, int((n + int(max_points) - 1) // int(max_points)))
+    idx = list(range(0, n, step))
+    return ([int(ts_ms[i]) for i in idx], [float(eq[i]) for i in idx])
+
+
+def _build_candidate_analytics_artifacts(*, run_dir: Path, report, cfg: OptimizationConfig, df: pd.DataFrame) -> None:
+    if getattr(report, "global_leaderboard", None) is None:
+        return
+    glb = report.global_leaderboard
+    if glb is None or glb.empty:
+        return
+
+    out_dir = run_dir / "candidate_analytics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    all_strats = builtin_strategies()
+    by_name = {s.name: s for s in all_strats}
+
+    train_frac = float(getattr(cfg, "train_frac", 0.75) or 0.75)
+    n = len(df)
+    if n < 10:
+        cut = n
+    else:
+        cut = max(1, min(n - 1, int(n * train_frac)))
+
+    df_train = df.iloc[:cut].reset_index(drop=True)
+    df_test = df.iloc[cut:].reset_index(drop=True) if cut < n else df.iloc[:0].copy()
+
+    ts_full = [int(x) for x in pd.to_numeric(df["timestamp_ms"], errors="coerce").fillna(0).astype("int64").to_list()]
+    ts_train = [int(x) for x in pd.to_numeric(df_train["timestamp_ms"], errors="coerce").fillna(0).astype("int64").to_list()]
+    ts_test = [int(x) for x in pd.to_numeric(df_test["timestamp_ms"], errors="coerce").fillna(0).astype("int64").to_list()]
+
+    ctx = StrategyContext(timeframe=str(getattr(cfg, "timeframe", "5m")))
+
+    rows = glb.to_dict(orient="records")
+    for row in rows:
+        try:
+            strat_name = str(row.get("strategy") or "")
+            if not strat_name:
+                continue
+            tr_num = int(row.get("trial"))
+        except Exception:
+            continue
+
+        strat = by_name.get(strat_name)
+        if strat is None:
+            continue
+
+        out_path = out_dir / f"{_safe_name(strat_name)}__trial_{int(tr_num)}.json"
+        if out_path.exists():
+            continue
+
+        params = _candidate_params_from_row(row)
+        params["strategy"] = strat_name
+
+        try:
+            bt_cfg = build_backtest_config_from_params(params=params, base=cfg)
+            sig_all = strat.compute_signal(df, params, ctx)
+        except Exception:
+            continue
+
+        sig_train = sig_all.iloc[: len(df_train)].reset_index(drop=True)
+        sig_test = sig_all.iloc[len(df_train) : len(df_train) + len(df_test)].reset_index(drop=True)
+
+        payload: dict = {
+            "version": 1,
+            "strategy": strat_name,
+            "trial": int(tr_num),
+            "analytics": {
+                "train_frac": float(train_frac),
+                "cut": int(cut),
+                "candles_total": int(n),
+            },
+            "segments": {},
+        }
+
+        for seg_name, df_slice, sig_slice, ts_ms in [
+            ("train", df_train, sig_train, ts_train),
+            ("test", df_test, sig_test, ts_test),
+            ("full", df.reset_index(drop=True), sig_all.reset_index(drop=True), ts_full),
+        ]:
+            if df_slice is None or df_slice.empty:
+                payload["segments"][seg_name] = {"empty": True}
+                continue
+
+            try:
+                period_start_ms = int(pd.to_numeric(df_slice["timestamp_ms"].iloc[0], errors="coerce"))
+                period_end_ms = int(pd.to_numeric(df_slice["timestamp_ms"].iloc[-1], errors="coerce"))
+            except Exception:
+                period_start_ms = None
+                period_end_ms = None
+            try:
+                res = run_backtest(df=df_slice, signal=sig_slice, config=bt_cfg)
+                pos_df, overview = summarize_positions(res.trades)
+            except Exception:
+                payload["segments"][seg_name] = {"error": True}
+                continue
+
+            eq = [float(x) for x in pd.Series(res.equity_curve).astype("float64").to_list()]
+            period_days = float(_period_days_from_df(df_slice))
+            ann = float(_ann_return_from_equity(eq, period_days=period_days))
+            pf = float(_profit_factor(pos_df))
+            sharpe_eq = float(_sharpe_from_equity(eq))
+
+            ts_ds, eq_ds = _downsample_ts_eq(ts_ms=ts_ms, eq=eq, max_points=3000)
+
+            payload["segments"][seg_name] = {
+                "period_start_ms": int(period_start_ms) if period_start_ms is not None else None,
+                "period_end_ms": int(period_end_ms) if period_end_ms is not None else None,
+                "ts_ms": ts_ds,
+                "equity": eq_ds,
+                "kpis": {
+                    "return_period_pct": float((eq[-1] / max(eq[0], 1e-12) - 1.0) * 100.0) if eq else 0.0,
+                    "return_annualized_pct": float(ann * 100.0),
+                    "max_drawdown_pct": float(res.max_drawdown_pct),
+                    "profit_factor": float(pf),
+                    "sharpe_equity": float(sharpe_eq),
+                    "period_days": float(period_days),
+                },
+                "overview": overview,
+                "positions": pos_df.to_dict(orient="records") if pos_df is not None and not pos_df.empty else [],
+            }
+
+        try:
+            out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -300,14 +600,18 @@ def main() -> None:
         except Exception:
             pass
 
-    db_path = run_dir / "optuna.db"
-    storage_url = f"sqlite:///{db_path.as_posix()}"
+    cfg_storage_url = str((ctx.get("config") or {}).get("storage_url") or "").strip()
+    if cfg_storage_url:
+        storage_url = cfg_storage_url
+    else:
+        db_path = run_dir / "optuna.db"
+        storage_url = f"sqlite:///{db_path.as_posix()}"
+        _configure_sqlite_pragmas(db_path=db_path)
 
-    _configure_sqlite_pragmas(db_path=db_path)
-
+    connect_args = _connect_args_for_storage_url(storage_url)
     storage = optuna.storages.RDBStorage(
         str(storage_url),
-        engine_kwargs={"connect_args": {"timeout": 60}},
+        engine_kwargs={"connect_args": connect_args},
     )
 
     status_path = run_dir / "status.json"
@@ -321,6 +625,8 @@ def main() -> None:
 
     stop_mode = str((ctx.get("config") or {}).get("stop_mode") or "").strip().lower()
     is_time_budget = (cfg.time_budget_seconds is not None) and (stop_mode == "time")
+
+    optuna_objective_metric = str((ctx.get("config") or {}).get("optuna_objective_metric") or "return_train_pct")
 
     run_started_at = time.time()
 
@@ -351,6 +657,8 @@ def main() -> None:
         for si, strat_name in enumerate(strategies):
             if stop_flag.exists():
                 break
+
+            study_name = f"{run_dir.name}.{str(strat_name)}"
 
             remaining = None
             if is_time_budget:
@@ -398,7 +706,7 @@ def main() -> None:
                     "--storage-url",
                     storage_url,
                     "--study-name",
-                    str(strat_name),
+                    str(study_name),
                     "--strategy",
                     str(strat_name),
                     "--context",
@@ -430,7 +738,7 @@ def main() -> None:
                     if (now - last_print_t) >= float(args.poll):
                         last_print_t = now
                         try:
-                            study = optuna.load_study(study_name=str(strat_name), storage=storage)
+                            study = optuna.load_study(study_name=str(study_name), storage=storage)
                             c, r, pr, fl = _study_progress(study)
                             best = _best_pareto_trial(study)
 
@@ -451,7 +759,11 @@ def main() -> None:
                                     f"(running={r}) | total { _bar(total_pct) } {total_done}/{total_planned}"
                                 )
                             if best is not None and best.values is not None:
-                                msg += f" | best_trial={int(best.number)} train_return={float(best.values[0]):.6f} train_dd={float(best.values[1]):.6f}"
+                                msg += (
+                                    f" | best_trial={int(best.number)} "
+                                    f"train_obj({optuna_objective_metric})={float(best.values[0]):.6f} "
+                                    f"train_dd={float(best.values[1]):.6f}"
+                                )
 
                                 if last_best_num != int(best.number):
                                     last_best_num = int(best.number)
@@ -463,7 +775,8 @@ def main() -> None:
                                                     "event": "best_update",
                                                     "strategy": str(strat_name),
                                                     "trial": int(best.number),
-                                                    "train_return": float(best.values[0]),
+                                                    "train_objective_metric": str(optuna_objective_metric),
+                                                    "train_objective": float(best.values[0]),
                                                     "train_dd": float(best.values[1]),
                                                 },
                                                 ensure_ascii=False,
@@ -588,8 +901,18 @@ def main() -> None:
         if df.empty:
             raise SystemExit("No candles loaded. Cannot build report.")
 
-        report = build_report_from_storage(df=df, config=cfg, storage_url=storage_url)
+        study_name_prefix = run_dir.name if str(storage_url).strip().lower().startswith("postgres") else None
+        report = build_report_from_storage(
+            df=df,
+            config=cfg,
+            storage_url=storage_url,
+            study_name_prefix=study_name_prefix,
+        )
         _save_report_artifacts(run_dir=run_dir, report=report, ctx=ctx, cfg=cfg, df=df)
+        try:
+            _build_candidate_analytics_artifacts(run_dir=run_dir, report=report, cfg=cfg, df=df)
+        except Exception:
+            pass
     finally:
         try:
             spinner_stop.set()

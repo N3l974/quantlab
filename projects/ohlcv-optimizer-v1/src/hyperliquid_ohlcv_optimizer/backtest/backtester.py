@@ -52,6 +52,9 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
     qty = 0.0
     avg_entry = 0.0
 
+    entry_qty0 = 0.0
+    peak_qty = 0.0
+
     tp_price = 0.0
     sl_price = 0.0
 
@@ -73,6 +76,28 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
             return cash
         pnl_unreal = qty * (close_price - avg_entry) * float(direction)
         return cash + pnl_unreal
+
+    def _pm_telemetry() -> dict:
+        pm_mode = str(getattr(config.pm, "mode", "none"))
+        if pm_mode == "grid":
+            try:
+                grid_adds_done = int(pm.grid_adds_done())
+            except Exception:
+                grid_adds_done = 0
+        else:
+            grid_adds_done = 0
+
+        out = {
+            "pm_mode": pm_mode,
+            "grid_adds_done": grid_adds_done,
+            "entry_qty0": float(entry_qty0),
+            "peak_qty": float(peak_qty),
+        }
+        try:
+            out["peak_qty_mult"] = float(peak_qty) / max(float(entry_qty0), 1e-12)
+        except Exception:
+            out["peak_qty_mult"] = 0.0
+        return out
 
     def recalc_tp_sl() -> None:
         nonlocal tp_price, sl_price
@@ -167,6 +192,9 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
             avg_entry = float(fill_price)
             entry_ts = ts
 
+            entry_qty0 = float(qty)
+            peak_qty = float(qty)
+
             tp1_filled = False
             tp_trail_extreme = np.nan
             position_realized_pnl = 0.0
@@ -180,6 +208,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                 qty = 0.0
                 avg_entry = 0.0
                 entry_ts = None
+                entry_qty0 = 0.0
+                peak_qty = 0.0
             else:
                 cash -= fee
 
@@ -203,6 +233,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                     "avg_entry": avg_entry,
                     "exit_price": exit_price,
                     "pnl": pnl,
+                    **_pm_telemetry(),
                 }
             )
             pm.on_trade_closed(position_realized_pnl)
@@ -213,6 +244,9 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
             tp_price = 0.0
             sl_price = 0.0
             entry_ts = None
+
+            entry_qty0 = 0.0
+            peak_qty = 0.0
 
             tp1_filled = False
             tp_trail_extreme = np.nan
@@ -238,6 +272,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                     "avg_entry": avg_entry,
                     "exit_price": exit_price,
                     "pnl": pnl,
+                    **_pm_telemetry(),
                 }
             )
             pm.on_trade_closed(position_realized_pnl)
@@ -294,6 +329,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             "avg_entry": avg_entry,
                             "exit_price": exit_price,
                             "pnl": pnl,
+                            **_pm_telemetry(),
                         }
                     )
                     pm.on_trade_closed(position_realized_pnl)
@@ -301,6 +337,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                     qty = 0.0
                     avg_entry = 0.0
                     entry_ts = None
+                    entry_qty0 = 0.0
+                    peak_qty = 0.0
                 else:
                     tp_mgmt = str(config.common.tp_mgmt)
                     if not (tp_mgmt == "partial_trailing" and tp1_filled):
@@ -318,6 +356,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             new_qty = qty + float(add_qty)
                             avg_entry = (avg_entry * qty + add_price * float(add_qty)) / max(new_qty, 1e-12)
                             qty = new_qty
+
+                            peak_qty = max(float(peak_qty), float(qty))
                             pm.on_grid_filled(add_price)
 
                             fee_add = _fee(add_qty * add_price, config.costs.fee_bps)
@@ -355,6 +395,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                     "avg_entry": avg_entry,
                                     "exit_price": exit_price,
                                     "pnl": pnl,
+                                    **_pm_telemetry(),
                                 }
                             )
 
@@ -368,6 +409,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                 tp1_filled = False
                                 tp_trail_extreme = np.nan
                                 position_realized_pnl = 0.0
+                                entry_qty0 = 0.0
+                                peak_qty = 0.0
                             else:
                                 tp1_filled = True
                                 tp_trail_extreme = float(tp_price)
@@ -399,6 +442,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                         "avg_entry": avg_entry,
                                         "exit_price": exit_price,
                                         "pnl": pnl,
+                                        **_pm_telemetry(),
                                     }
                                 )
                                 pm.on_trade_closed(position_realized_pnl)
@@ -409,6 +453,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                 tp1_filled = False
                                 tp_trail_extreme = np.nan
                                 position_realized_pnl = 0.0
+                                entry_qty0 = 0.0
+                                peak_qty = 0.0
 
                     if direction != 0 and tp_mgmt != "partial_trailing" and favorable >= tp_price:
                         exit_price = _apply_slippage(tp_price, side="sell", slippage_bps=config.costs.slippage_bps)
@@ -428,6 +474,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                 "avg_entry": avg_entry,
                                 "exit_price": exit_price,
                                 "pnl": pnl,
+                                **_pm_telemetry(),
                             }
                         )
                         pm.on_trade_closed(position_realized_pnl)
@@ -437,6 +484,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                         entry_ts = None
                         tp1_filled = False
                         tp_trail_extreme = np.nan
+                        entry_qty0 = 0.0
+                        peak_qty = 0.0
                         position_realized_pnl = 0.0
 
             else:
@@ -458,6 +507,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             "avg_entry": avg_entry,
                             "exit_price": exit_price,
                             "pnl": pnl,
+                            **_pm_telemetry(),
                         }
                     )
                     pm.on_trade_closed(position_realized_pnl)
@@ -465,6 +515,9 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                     qty = 0.0
                     avg_entry = 0.0
                     entry_ts = None
+
+                    entry_qty0 = 0.0
+                    peak_qty = 0.0
 
                     tp1_filled = False
                     tp_trail_extreme = np.nan
@@ -486,6 +539,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             new_qty = qty + float(add_qty)
                             avg_entry = (avg_entry * qty + add_price * float(add_qty)) / max(new_qty, 1e-12)
                             qty = new_qty
+
+                            peak_qty = max(float(peak_qty), float(qty))
                             pm.on_grid_filled(add_price)
 
                             fee_add = _fee(add_qty * add_price, config.costs.fee_bps)
@@ -523,6 +578,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                     "avg_entry": avg_entry,
                                     "exit_price": exit_price,
                                     "pnl": pnl,
+                                    **_pm_telemetry(),
                                 }
                             )
 
@@ -567,6 +623,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                         "avg_entry": avg_entry,
                                         "exit_price": exit_price,
                                         "pnl": pnl,
+                                        **_pm_telemetry(),
                                     }
                                 )
                                 pm.on_trade_closed(position_realized_pnl)
@@ -577,6 +634,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                 tp1_filled = False
                                 tp_trail_extreme = np.nan
                                 position_realized_pnl = 0.0
+                                entry_qty0 = 0.0
+                                peak_qty = 0.0
 
                     if direction != 0 and tp_mgmt != "partial_trailing" and favorable <= tp_price:
                         exit_price = _apply_slippage(tp_price, side="buy", slippage_bps=config.costs.slippage_bps)
@@ -596,6 +655,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                                 "avg_entry": avg_entry,
                                 "exit_price": exit_price,
                                 "pnl": pnl,
+                                **_pm_telemetry(),
                             }
                         )
                         pm.on_trade_closed(position_realized_pnl)
@@ -605,6 +665,8 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                         entry_ts = None
                         tp1_filled = False
                         tp_trail_extreme = np.nan
+                        entry_qty0 = 0.0
+                        peak_qty = 0.0
                         position_realized_pnl = 0.0
 
         equity_curve.append(mark_to_market(c))

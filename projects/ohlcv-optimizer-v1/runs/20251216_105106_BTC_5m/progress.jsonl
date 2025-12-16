@@ -1,0 +1,3 @@
+{"t": 1765867867.3189414, "event": "strategy_start", "strategy": "rsi_reversion"}
+{"t": 1765867868.0171497, "event": "best_update", "strategy": "rsi_reversion", "trial": 629, "train_objective_metric": "return_train_pct", "train_objective": 9.190982100871214, "train_dd": 0.0}
+{"t": 1765867869.0360947, "event": "strategy_end", "strategy": "rsi_reversion"}

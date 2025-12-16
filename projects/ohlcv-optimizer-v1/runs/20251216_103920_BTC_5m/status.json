@@ -1,0 +1,16 @@
+{
+  "state": "running",
+  "run_dir": "C:\\Users\\Nahel\\Documents\\GitHub\\quantlab\\projects\\ohlcv-optimizer-v1\\runs\\20251216_103920_BTC_5m",
+  "started_at": 1765867161.0001395,
+  "updated_at": 1765867161.0001395,
+  "storage_url": "postgresql+psycopg2://postgres:optuna@localhost:5432/optuna",
+  "workers": 8,
+  "strategies": [
+    "rsi_reversion"
+  ],
+  "current_strategy": null,
+  "current_strategy_index": null,
+  "strategies_total": 1,
+  "max_trials_per_strategy": 1000,
+  "time_budget_seconds": null
+}
