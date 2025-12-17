@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -11,8 +11,10 @@ class ExecutionCosts:
 
 @dataclass(frozen=True)
 class RiskConfig:
-    risk_pct: float
-    max_position_notional_pct_equity: float
+    mode: str = "risk"
+    risk_pct: float = 0.01
+    fixed_notional_pct_equity: float = 0.0
+    max_position_notional_pct_equity: float = 100.0
 
 
 @dataclass(frozen=True)
@@ -52,9 +54,26 @@ class PositionManagerConfig:
 
 
 @dataclass(frozen=True)
+class BrokerConfig:
+    profile: str  # spot|perps|cfd
+    perps_maintenance_margin_rate: float = 0.01
+    cfd_initial_margin_rate: float = 0.01
+    cfd_stopout_margin_level: float = 0.5
+
+
+@dataclass(frozen=True)
+class ExecutionConstraints:
+    min_qty: float = 0.0
+    qty_step: float = 0.0
+    min_notional: float = 0.0
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     initial_equity: float
     costs: ExecutionCosts
     risk: RiskConfig
     common: CommonTradeParams
     pm: PositionManagerConfig
+    broker: BrokerConfig
+    execution: ExecutionConstraints = field(default_factory=ExecutionConstraints)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,15 @@ class BacktestResult:
     equity_curve: np.ndarray
     net_return_pct: float
     max_drawdown_pct: float
+    max_drawdown_intrabar_pct: float
+    exec_reject_rate: float
+    exec_round_rate: float
+    liquidated: bool
+    liquidation_ts: int | None
+    peak_notional: float
+    peak_notional_pct_equity: float
+    peak_qty_mult: float
+    cap_hit_rate: float
     trades: pd.DataFrame
 
 
@@ -35,7 +45,21 @@ def _fee(amount_notional: float, fee_bps: float) -> float:
 def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig) -> BacktestResult:
     if df.empty:
         eq = np.array([config.initial_equity], dtype=np.float64)
-        return BacktestResult(equity_curve=eq, net_return_pct=0.0, max_drawdown_pct=0.0, trades=pd.DataFrame())
+        return BacktestResult(
+            equity_curve=eq,
+            net_return_pct=0.0,
+            max_drawdown_pct=0.0,
+            max_drawdown_intrabar_pct=0.0,
+            exec_reject_rate=0.0,
+            exec_round_rate=0.0,
+            liquidated=False,
+            liquidation_ts=None,
+            peak_notional=0.0,
+            peak_notional_pct_equity=0.0,
+            peak_qty_mult=0.0,
+            cap_hit_rate=0.0,
+            trades=pd.DataFrame(),
+        )
 
     sig = signal.reindex(df.index).fillna(0).astype("int8")
     entry_intent = sig.shift(1).fillna(0).astype("int8")
@@ -48,110 +72,40 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
 
     cash = float(config.initial_equity)
 
+    exec_ops = 0
+    exec_rejects = 0
+    exec_rounds = 0
+
+    cap_ops = 0
+    cap_hits = 0
+
     direction = 0  # -1 short, +1 long
     qty = 0.0
     avg_entry = 0.0
 
-    entry_qty0 = 0.0
-    peak_qty = 0.0
-
-    tp_price = 0.0
-    sl_price = 0.0
-
-    atr_ref = np.nan
-
-    tp1_filled = False
-    tp_trail_extreme = np.nan
-    position_realized_pnl = 0.0
-
-    equity_curve: list[float] = []
-    trades_rows: list[dict] = []
-
-    entry_ts = None
-
-    position_id = 0
-
-    def mark_to_market(close_price: float) -> float:
-        if direction == 0:
-            return cash
-        pnl_unreal = qty * (close_price - avg_entry) * float(direction)
-        return cash + pnl_unreal
-
-    def _pm_telemetry() -> dict:
-        pm_mode = str(getattr(config.pm, "mode", "none"))
-        if pm_mode == "grid":
-            try:
-                grid_adds_done = int(pm.grid_adds_done())
-            except Exception:
-                grid_adds_done = 0
-        else:
-            grid_adds_done = 0
-
-        out = {
-            "pm_mode": pm_mode,
-            "grid_adds_done": grid_adds_done,
-            "entry_qty0": float(entry_qty0),
-            "peak_qty": float(peak_qty),
-        }
-        try:
-            out["peak_qty_mult"] = float(peak_qty) / max(float(entry_qty0), 1e-12)
-        except Exception:
-            out["peak_qty_mult"] = 0.0
-        return out
-
-    def recalc_tp_sl() -> None:
-        nonlocal tp_price, sl_price
-
-        sl_type = str(config.common.sl_type)
-        if sl_type == "atr":
-            if atr_series is None:
-                sl_price = np.nan
-                return
-            atr_val = float(atr_ref)
-            if not np.isfinite(atr_val):
-                sl_price = np.nan
-                return
-            dist = float(config.common.sl_atr_mult) * atr_val
-        else:
-            dist = avg_entry * (float(config.common.sl_pct) / 100.0)
-
-        if direction > 0:
-            sl_price = avg_entry - dist
-        else:
-            sl_price = avg_entry + dist
-
-        tp_mode = str(config.common.tp_mode)
-        if tp_mode == "rr":
-            risk_dist = abs(float(avg_entry) - float(sl_price))
-            if (not np.isfinite(risk_dist)) or risk_dist <= 0:
-                tp_price = np.nan
-                return
-            rr = float(config.common.tp_rr)
-            if direction > 0:
-                tp_price = avg_entry + rr * risk_dist
-            else:
-                tp_price = avg_entry - rr * risk_dist
-        else:
-            tp = float(config.common.tp_pct) / 100.0
-            if direction > 0:
-                tp_price = avg_entry * (1.0 + tp)
-            else:
-                tp_price = avg_entry * (1.0 - tp)
-
     def risk_qty_for_entry(entry_price: float, *, atr_value: float | None) -> float:
-        risk_cap = cash * float(config.risk.risk_pct)
-
-        sl_type = str(config.common.sl_type)
-        if sl_type == "atr":
-            if atr_value is None or (not np.isfinite(float(atr_value))):
+        mode = str(getattr(config.risk, "mode", "risk") or "risk").strip().lower()
+        if mode in {"fixed", "notional", "fixed_notional"}:
+            notional = cash * (float(getattr(config.risk, "fixed_notional_pct_equity", 0.0) or 0.0) / 100.0)
+            if (not np.isfinite(float(notional))) or float(notional) <= 0:
                 return 0.0
-            sl_dist = float(config.common.sl_atr_mult) * float(atr_value)
+            q = float(notional) / max(float(entry_price), 1e-12)
         else:
-            sl_dist = entry_price * (float(config.common.sl_pct) / 100.0)
+            risk_cap = cash * float(getattr(config.risk, "risk_pct", 0.0) or 0.0)
 
-        if (not np.isfinite(sl_dist)) or sl_dist <= 0:
-            return 0.0
-        q = risk_cap / sl_dist
+            sl_type = str(config.common.sl_type)
+            if sl_type == "atr":
+                if atr_value is None or (not np.isfinite(float(atr_value))):
+                    return 0.0
+                sl_dist = float(config.common.sl_atr_mult) * float(atr_value)
+            else:
+                sl_dist = entry_price * (float(config.common.sl_pct) / 100.0)
+
+            if (not np.isfinite(sl_dist)) or sl_dist <= 0:
+                return 0.0
+            if (not np.isfinite(float(risk_cap))) or float(risk_cap) <= 0:
+                return 0.0
+            q = risk_cap / sl_dist
 
         max_notional = cash * float(config.risk.max_position_notional_pct_equity) / 100.0
         if max_notional > 0:
@@ -159,12 +113,46 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
         return float(max(q, 0.0))
 
     def cap_qty_by_max_notional(q: float, *, price: float, existing_qty: float = 0.0) -> float:
+        nonlocal cap_ops, cap_hits
+        cap_ops += 1
         max_notional = cash * float(config.risk.max_position_notional_pct_equity) / 100.0
         if max_notional <= 0:
             return float(max(q, 0.0))
         max_total_qty = max_notional / max(float(price), 1e-12)
         remaining = max_total_qty - float(existing_qty)
-        return float(max(0.0, min(float(q), float(remaining))))
+        out = float(max(0.0, min(float(q), float(remaining))))
+        if float(out) + 1e-12 < float(q):
+            cap_hits += 1
+        return float(out)
+
+    def apply_execution_constraints(q: float, *, price: float) -> float:
+        nonlocal exec_ops, exec_rejects, exec_rounds
+        exec_ops += 1
+
+        out = float(max(q, 0.0))
+        if out <= 0:
+            exec_rejects += 1
+            return 0.0
+
+        step = float(getattr(config.execution, "qty_step", 0.0) or 0.0)
+        if np.isfinite(step) and step > 0:
+            out2 = math.floor(out / step) * step
+            if out2 + 1e-12 < out:
+                exec_rounds += 1
+            out = float(max(out2, 0.0))
+
+        min_qty = float(getattr(config.execution, "min_qty", 0.0) or 0.0)
+        if np.isfinite(min_qty) and min_qty > 0 and out + 1e-12 < min_qty:
+            exec_rejects += 1
+            return 0.0
+
+        min_notional = float(getattr(config.execution, "min_notional", 0.0) or 0.0)
+        notional = out * float(price)
+        if np.isfinite(min_notional) and min_notional > 0 and notional + 1e-8 < min_notional:
+            exec_rejects += 1
+            return 0.0
+
+        return float(out)
 
     for i in range(len(df)):
         row = df.iloc[i]
@@ -188,6 +176,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
             base_mult = pm.base_size_multiplier()
             q0 = risk_qty_for_entry(fill_price, atr_value=atr_prev) * base_mult
             q0 = cap_qty_by_max_notional(q0, price=fill_price, existing_qty=0.0)
+            q0 = apply_execution_constraints(q0, price=fill_price)
             qty = float(q0)
             avg_entry = float(fill_price)
             entry_ts = ts
@@ -350,6 +339,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             add_price = _apply_slippage(float(ngp), side="buy", slippage_bps=config.costs.slippage_bps)
                             add_qty = risk_qty_for_entry(add_price, atr_value=atr_prev) * pm.grid_add_qty_multiplier()
                             add_qty = cap_qty_by_max_notional(add_qty, price=add_price, existing_qty=qty)
+                            add_qty = apply_execution_constraints(add_qty, price=add_price)
                             if add_qty <= 0:
                                 break
 
@@ -374,46 +364,45 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             close_frac = float(config.common.tp1_close_frac)
                             close_qty = float(qty) * close_frac
                             close_qty = float(max(0.0, min(float(close_qty), float(qty))))
+                            close_qty = apply_execution_constraints(close_qty, price=tp_price)
                             if close_qty >= float(qty) or close_qty <= 0:
-                                close_qty = float(qty)
-
-                            exit_price = _apply_slippage(tp_price, side="sell", slippage_bps=config.costs.slippage_bps)
-                            fee_out = _fee(close_qty * exit_price, config.costs.fee_bps)
-                            pnl = close_qty * (exit_price - avg_entry)
-                            cash += pnl
-                            cash -= fee_out
-                            position_realized_pnl += float(pnl)
-
-                            trades_rows.append(
-                                {
-                                    "position_id": position_id,
-                                    "entry_ts": entry_ts,
-                                    "exit_ts": ts,
-                                    "exit_reason": "tp1_partial",
-                                    "direction": direction,
-                                    "qty": close_qty,
-                                    "avg_entry": avg_entry,
-                                    "exit_price": exit_price,
-                                    "pnl": pnl,
-                                    **_pm_telemetry(),
-                                }
-                            )
-
-                            qty = float(qty) - float(close_qty)
-                            if qty <= 0:
-                                pm.on_trade_closed(position_realized_pnl)
-                                direction = 0
-                                qty = 0.0
-                                avg_entry = 0.0
-                                entry_ts = None
-                                tp1_filled = False
-                                tp_trail_extreme = np.nan
-                                position_realized_pnl = 0.0
-                                entry_qty0 = 0.0
-                                peak_qty = 0.0
-                            else:
                                 tp1_filled = True
-                                tp_trail_extreme = float(tp_price)
+                            else:
+                                exit_price = _apply_slippage(tp_price, side="sell", slippage_bps=config.costs.slippage_bps)
+                                fee_out = _fee(close_qty * exit_price, config.costs.fee_bps)
+                                pnl = close_qty * (exit_price - avg_entry)
+                                cash += pnl
+                                cash -= fee_out
+                                position_realized_pnl += float(pnl)
+
+                                trades_rows.append(
+                                    {
+                                        "position_id": position_id,
+                                        "entry_ts": entry_ts,
+                                        "exit_ts": ts,
+                                        "exit_reason": "tp1_partial",
+                                        "direction": direction,
+                                        "qty": close_qty,
+                                        "avg_entry": avg_entry,
+                                        "exit_price": exit_price,
+                                        "pnl": pnl,
+                                        **_pm_telemetry(),
+                                    }
+                                )
+
+                                qty = float(qty) - float(close_qty)
+                                if qty <= 0:
+                                    pm.on_trade_closed(position_realized_pnl)
+                                    direction = 0
+                                    qty = 0.0
+                                    avg_entry = 0.0
+                                    entry_ts = None
+                                    tp1_filled = False
+                                    tp_trail_extreme = np.nan
+                                    position_realized_pnl = 0.0
+                                else:
+                                    tp1_filled = True
+                                    tp_trail_extreme = float(tp_price)
 
                         elif tp1_filled and i > 0:
                             ref_price = float(df.iloc[i - 1]["close"])
@@ -533,6 +522,7 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             add_price = _apply_slippage(float(ngp), side="sell", slippage_bps=config.costs.slippage_bps)
                             add_qty = risk_qty_for_entry(add_price, atr_value=atr_prev) * pm.grid_add_qty_multiplier()
                             add_qty = cap_qty_by_max_notional(add_qty, price=add_price, existing_qty=qty)
+                            add_qty = apply_execution_constraints(add_qty, price=add_price)
                             if add_qty <= 0:
                                 break
 
@@ -557,44 +547,45 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                             close_frac = float(config.common.tp1_close_frac)
                             close_qty = float(qty) * close_frac
                             close_qty = float(max(0.0, min(float(close_qty), float(qty))))
+                            close_qty = apply_execution_constraints(close_qty, price=tp_price)
                             if close_qty >= float(qty) or close_qty <= 0:
-                                close_qty = float(qty)
-
-                            exit_price = _apply_slippage(tp_price, side="buy", slippage_bps=config.costs.slippage_bps)
-                            fee_out = _fee(close_qty * exit_price, config.costs.fee_bps)
-                            pnl = close_qty * (avg_entry - exit_price)
-                            cash += pnl
-                            cash -= fee_out
-                            position_realized_pnl += float(pnl)
-
-                            trades_rows.append(
-                                {
-                                    "position_id": position_id,
-                                    "entry_ts": entry_ts,
-                                    "exit_ts": ts,
-                                    "exit_reason": "tp1_partial",
-                                    "direction": direction,
-                                    "qty": close_qty,
-                                    "avg_entry": avg_entry,
-                                    "exit_price": exit_price,
-                                    "pnl": pnl,
-                                    **_pm_telemetry(),
-                                }
-                            )
-
-                            qty = float(qty) - float(close_qty)
-                            if qty <= 0:
-                                pm.on_trade_closed(position_realized_pnl)
-                                direction = 0
-                                qty = 0.0
-                                avg_entry = 0.0
-                                entry_ts = None
-                                tp1_filled = False
-                                tp_trail_extreme = np.nan
-                                position_realized_pnl = 0.0
-                            else:
                                 tp1_filled = True
-                                tp_trail_extreme = float(tp_price)
+                            else:
+                                exit_price = _apply_slippage(tp_price, side="buy", slippage_bps=config.costs.slippage_bps)
+                                fee_out = _fee(close_qty * exit_price, config.costs.fee_bps)
+                                pnl = close_qty * (avg_entry - exit_price)
+                                cash += pnl
+                                cash -= fee_out
+                                position_realized_pnl += float(pnl)
+
+                                trades_rows.append(
+                                    {
+                                        "position_id": position_id,
+                                        "entry_ts": entry_ts,
+                                        "exit_ts": ts,
+                                        "exit_reason": "tp1_partial",
+                                        "direction": direction,
+                                        "qty": close_qty,
+                                        "avg_entry": avg_entry,
+                                        "exit_price": exit_price,
+                                        "pnl": pnl,
+                                        **_pm_telemetry(),
+                                    }
+                                )
+
+                                qty = float(qty) - float(close_qty)
+                                if qty <= 0:
+                                    pm.on_trade_closed(position_realized_pnl)
+                                    direction = 0
+                                    qty = 0.0
+                                    avg_entry = 0.0
+                                    entry_ts = None
+                                    tp1_filled = False
+                                    tp_trail_extreme = np.nan
+                                    position_realized_pnl = 0.0
+                                else:
+                                    tp1_filled = True
+                                    tp_trail_extreme = float(tp_price)
 
                         elif tp1_filled and i > 0:
                             ref_price = float(df.iloc[i - 1]["close"])
@@ -669,15 +660,64 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
                         peak_qty = 0.0
                         position_realized_pnl = 0.0
 
-        equity_curve.append(mark_to_market(c))
+        eq_close = float(mark_to_market(c))
+        eq_worst = float(worst_mtm(h, l))
+
+        _update_exposure_metrics(price=c, eq_ref=eq_close)
+        _update_exposure_metrics(price=(float(l) if direction > 0 else float(h)), eq_ref=eq_worst)
+
+        if (not liquidated) and direction != 0 and _should_liquidate(eq_worst=eq_worst, price=(float(l) if direction > 0 else float(h))):
+            liquidated = True
+            liquidation_ts = int(ts)
+            direction = 0
+            qty = 0.0
+            avg_entry = 0.0
+            tp_price = 0.0
+            sl_price = 0.0
+            entry_ts = None
+            entry_qty0 = 0.0
+            peak_qty = 0.0
+            tp1_filled = False
+            tp_trail_extreme = np.nan
+            position_realized_pnl = 0.0
+            cash = max(0.0, float(eq_worst))
+
+            eq_close = float(cash)
+            eq_worst = float(cash)
+            equity_curve.append(eq_close)
+            equity_worst_curve.append(eq_worst)
+            break
+
+        equity_curve.append(eq_close)
+        equity_worst_curve.append(eq_worst)
 
     eq = np.array(equity_curve, dtype=np.float64)
+    eq_w = np.array(equity_worst_curve, dtype=np.float64)
     trades = pd.DataFrame(trades_rows)
+
+    exec_reject_rate = 0.0
+    exec_round_rate = 0.0
+    if int(exec_ops) > 0:
+        exec_reject_rate = float(exec_rejects) / float(exec_ops)
+        exec_round_rate = float(exec_rounds) / float(exec_ops)
+
+    cap_hit_rate = 0.0
+    if int(cap_ops) > 0:
+        cap_hit_rate = float(cap_hits) / float(cap_ops)
 
     res = BacktestResult(
         equity_curve=eq,
         net_return_pct=net_return_pct(eq),
         max_drawdown_pct=max_drawdown_pct(eq),
+        max_drawdown_intrabar_pct=max_drawdown_pct(eq_w),
+        exec_reject_rate=float(exec_reject_rate),
+        exec_round_rate=float(exec_round_rate),
+        liquidated=bool(liquidated),
+        liquidation_ts=liquidation_ts,
+        peak_notional=float(peak_notional),
+        peak_notional_pct_equity=float(peak_notional_pct_equity),
+        peak_qty_mult=float(global_peak_qty_mult),
+        cap_hit_rate=float(cap_hit_rate),
         trades=trades,
     )
     return res

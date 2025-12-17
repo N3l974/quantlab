@@ -81,7 +81,14 @@ Colonnes Parquet attendues:
 
 Sources typiques (selon les données téléchargées):
 - `hyperliquid_perps` (crypto perps)
+- `binance_futures` (crypto perps)
 - `mt5_icmarkets` (MT5 local, ex: ICMarkets Raw Spread)
+
+### Broker profile (Optimize)
+
+- **Data source**: sélectionne la source OHLCV à lire (dossier sous `data/market_data/ohlcv/<source>/...`).
+- **Broker profile**: preset qui contrôle les paramètres "broker" (risk model, fees, slippage, contraintes d'exécution, margin/stopout).
+- **Custom**: affiche ces paramètres et permet de les override. Si `Custom` n'est pas coché, ces paramètres sont auto-set selon le preset et cachés.
 
 ## Utilisation (dans l'UI)
 
@@ -112,6 +119,11 @@ Tu peux activer/désactiver les stratégies dans l'UI.
 - **Initial equity**: capital de départ
 - **Fee (taker) bps**: par défaut `4.5` bps (Hyperliquid Perps tier 0)
 - **Slippage bps**: slippage/spread approximatif (à calibrer)
+- **Max leverage (x)**: si `> 0`, fixe le cap notionnel via `max_notional_pct_equity = max_leverage * 100`.
+  - Defaults par broker profile:
+    - `hyperliquid_perps`: `50x`
+    - `binance_futures`: `50x`
+    - `mt5_icmarkets`: `2x`
 - **Position management**:
   - `none`: pas d'adds
   - `grid`: adds espacés depuis le dernier fill, TP/SL recalculés sur le prix moyen
@@ -144,6 +156,9 @@ Chaque run est persisté dans `runs/<run_id>_.../` et contient notamment:
 - `status.json`: état courant (pour Streamlit)
 - `progress.jsonl`: event log (progress + best-so-far)
 - `report.json` + `*.csv`: résultats exportés en fin de run
+
+Notes (broker preset):
+- `context.json` et `report.json` incluent `broker_preset` et `broker_custom_overrides` pour restaurer l'état de l'UI.
 
 ### Lancer une optimisation depuis le terminal
 

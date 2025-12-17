@@ -14,8 +14,10 @@ from hyperliquid_ohlcv_optimizer.backtest.backtester import run_backtest
 from hyperliquid_ohlcv_optimizer.backtest.trade_analysis import summarize_positions
 from hyperliquid_ohlcv_optimizer.backtest.types import (
     BacktestConfig,
+    BrokerConfig,
     CommonTradeParams,
     ExecutionCosts,
+    ExecutionConstraints,
     GridConfig,
     MartingaleConfig,
     PositionManagerConfig,
@@ -39,8 +41,18 @@ class OptimizationConfig:
     timeframe: str = "5m"
     pm_mode: str = "auto"  # auto|none|grid|martingale
     strategies: list[str] | None = None
+    risk_mode: str = "risk"  # risk|fixed
     risk_pct: float = 0.01
+    fixed_notional_pct_equity: float = 0.0
     max_position_notional_pct_equity: float = 100.0
+    max_leverage: float | None = None
+    min_qty: float = 0.0
+    qty_step: float = 0.0
+    min_notional: float = 0.0
+    broker_profile: str = "perps"  # spot|perps|cfd
+    perps_maintenance_margin_rate: float = 0.01
+    cfd_initial_margin_rate: float = 0.01
+    cfd_stopout_margin_level: float = 0.5
     pareto_candidates_max: int = 50
     candidate_pool: str = "pareto"  # pareto|complete
     global_top_k: int = 50
@@ -190,10 +202,23 @@ def _build_global_outputs(*, candidates: pd.DataFrame, config: OptimizationConfi
 def _position_pnl_sequence(trades: pd.DataFrame) -> list[float]:
     if trades is None or trades.empty:
         return []
-    if "position_id" not in trades.columns or "pnl" not in trades.columns:
+
+    if "position_id" in trades.columns:
+        pos_key = "position_id"
+    elif "entry_ts" in trades.columns:
+        pos_key = "entry_ts"
+    else:
         return []
 
-    df = trades[["position_id", "pnl"]].copy()
+    if "pnl" in trades.columns:
+        pnl_col = "pnl"
+    elif "pnl_total" in trades.columns:
+        pnl_col = "pnl_total"
+    else:
+        return []
+
+    df = trades[[pos_key, pnl_col]].copy()
+    df = df.rename(columns={pos_key: "position_id", pnl_col: "pnl"})
     if "exit_ts" in trades.columns:
         df["_sort_ts"] = trades["exit_ts"]
     elif "entry_ts" in trades.columns:
@@ -388,6 +413,14 @@ def build_report_from_storage(
                 sharpe_pnl_test = float(overview_test.get("sharpe_pnl_per_position", 0.0))
                 dd_test_pct = float(res_test.max_drawdown_pct)
                 ret_test_pct = float(res_test.net_return_pct)
+
+                dd_test_intrabar_pct = float(res_test.max_drawdown_intrabar_pct)
+                liquidated_test = bool(res_test.liquidated)
+                peak_notional_pct_equity_test = float(res_test.peak_notional_pct_equity)
+                peak_qty_mult_test = float(res_test.peak_qty_mult)
+                cap_hit_rate_test = float(res_test.cap_hit_rate)
+                exec_reject_rate_test = float(getattr(res_test, "exec_reject_rate", 0.0))
+                exec_round_rate_test = float(getattr(res_test, "exec_round_rate", 0.0))
             else:
                 sharpe_test = float("nan")
                 trades_test = 0
@@ -396,6 +429,14 @@ def build_report_from_storage(
                 sharpe_pnl_test = float("nan")
                 dd_test_pct = float("nan")
                 ret_test_pct = float("nan")
+
+                dd_test_intrabar_pct = float("nan")
+                liquidated_test = False
+                peak_notional_pct_equity_test = float("nan")
+                peak_qty_mult_test = float("nan")
+                cap_hit_rate_test = float("nan")
+                exec_reject_rate_test = float("nan")
+                exec_round_rate_test = float("nan")
 
             eligible = bool(eligible_train)
 
@@ -432,9 +473,23 @@ def build_report_from_storage(
                 "strategy": strat.name,
                 "return_train_pct": res_train.net_return_pct,
                 "dd_train_pct": res_train.max_drawdown_pct,
+                "dd_train_intrabar_pct": float(res_train.max_drawdown_intrabar_pct),
+                "exec_reject_rate_train": float(getattr(res_train, "exec_reject_rate", 0.0)),
+                "exec_round_rate_train": float(getattr(res_train, "exec_round_rate", 0.0)),
                 "return_test_pct": ret_test_pct,
                 "dd_test_pct": dd_test_pct,
+                "dd_test_intrabar_pct": float(dd_test_intrabar_pct),
+                "exec_reject_rate_test": float(exec_reject_rate_test),
+                "exec_round_rate_test": float(exec_round_rate_test),
                 "tested": bool(do_test_eval) and (int(trades_test) >= int(min_trades_test)),
+                "liquidated_train": bool(res_train.liquidated),
+                "liquidated_test": bool(liquidated_test),
+                "peak_notional_pct_equity_train": float(res_train.peak_notional_pct_equity),
+                "peak_notional_pct_equity_test": float(peak_notional_pct_equity_test),
+                "peak_qty_mult_train": float(res_train.peak_qty_mult),
+                "peak_qty_mult_test": float(peak_qty_mult_test),
+                "cap_hit_rate_train": float(res_train.cap_hit_rate),
+                "cap_hit_rate_test": float(cap_hit_rate_test),
                 "sharpe_train": sharpe_train,
                 "sharpe_test": sharpe_test,
                 "median_pnl_per_position_train": median_pnl_train,
@@ -552,7 +607,20 @@ def _build_backtest_config(*, trial: optuna.Trial, base: OptimizationConfig) -> 
         sl_atr_mult = float(trial.suggest_float("sl_atr_mult", 0.5, 6.0))
 
     costs = ExecutionCosts(fee_bps=base.fee_bps, slippage_bps=base.slippage_bps)
-    risk = RiskConfig(risk_pct=base.risk_pct, max_position_notional_pct_equity=base.max_position_notional_pct_equity)
+    max_notional_pct_eq = float(base.max_position_notional_pct_equity)
+    if getattr(base, "max_leverage", None) is not None:
+        try:
+            lev = float(getattr(base, "max_leverage") or 0.0)
+            if lev > 0:
+                max_notional_pct_eq = lev * 100.0
+        except Exception:
+            pass
+    risk = RiskConfig(
+        mode=str(getattr(base, "risk_mode", "risk") or "risk"),
+        risk_pct=float(getattr(base, "risk_pct", 0.01) or 0.0),
+        fixed_notional_pct_equity=float(getattr(base, "fixed_notional_pct_equity", 0.0) or 0.0),
+        max_position_notional_pct_equity=max_notional_pct_eq,
+    )
     common = CommonTradeParams(
         tp_mode=tp_mode,
         tp_pct=tp_pct,
@@ -590,7 +658,36 @@ def _build_backtest_config(*, trial: optuna.Trial, base: OptimizationConfig) -> 
     else:
         pm = PositionManagerConfig(mode="none")
 
-    return BacktestConfig(initial_equity=base.initial_equity, costs=costs, risk=risk, common=common, pm=pm)
+    prof_raw = str(getattr(base, "broker_profile", "perps") or "perps").strip().lower()
+    if prof_raw in ("spot",):
+        prof = "spot"
+    elif ("icmarkets" in prof_raw) or ("mt5" in prof_raw) or (prof_raw == "cfd"):
+        prof = "cfd"
+    else:
+        prof = "perps"
+
+    broker = BrokerConfig(
+        profile=str(prof),
+        perps_maintenance_margin_rate=float(getattr(base, "perps_maintenance_margin_rate", 0.01) or 0.01),
+        cfd_initial_margin_rate=float(getattr(base, "cfd_initial_margin_rate", 0.01) or 0.01),
+        cfd_stopout_margin_level=float(getattr(base, "cfd_stopout_margin_level", 0.5) or 0.5),
+    )
+
+    execution = ExecutionConstraints(
+        min_qty=float(getattr(base, "min_qty", 0.0) or 0.0),
+        qty_step=float(getattr(base, "qty_step", 0.0) or 0.0),
+        min_notional=float(getattr(base, "min_notional", 0.0) or 0.0),
+    )
+
+    return BacktestConfig(
+        initial_equity=base.initial_equity,
+        costs=costs,
+        risk=risk,
+        common=common,
+        pm=pm,
+        broker=broker,
+        execution=execution,
+    )
 
 
 def build_backtest_config_from_params(*, params: dict, base: OptimizationConfig) -> BacktestConfig:
@@ -613,7 +710,20 @@ def _build_backtest_config_from_params(*, params: dict, base: OptimizationConfig
     exit_on_flat = bool(params.get("exit_on_flat", False))
 
     costs = ExecutionCosts(fee_bps=base.fee_bps, slippage_bps=base.slippage_bps)
-    risk = RiskConfig(risk_pct=base.risk_pct, max_position_notional_pct_equity=base.max_position_notional_pct_equity)
+    max_notional_pct_eq = float(base.max_position_notional_pct_equity)
+    if getattr(base, "max_leverage", None) is not None:
+        try:
+            lev = float(getattr(base, "max_leverage") or 0.0)
+            if lev > 0:
+                max_notional_pct_eq = lev * 100.0
+        except Exception:
+            pass
+    risk = RiskConfig(
+        mode=str(getattr(base, "risk_mode", "risk") or "risk"),
+        risk_pct=float(getattr(base, "risk_pct", 0.01) or 0.0),
+        fixed_notional_pct_equity=float(getattr(base, "fixed_notional_pct_equity", 0.0) or 0.0),
+        max_position_notional_pct_equity=max_notional_pct_eq,
+    )
     common = CommonTradeParams(
         tp_mode=tp_mode,
         tp_pct=tp_pct,
@@ -653,7 +763,36 @@ def _build_backtest_config_from_params(*, params: dict, base: OptimizationConfig
     else:
         pm = PositionManagerConfig(mode="none")
 
-    return BacktestConfig(initial_equity=base.initial_equity, costs=costs, risk=risk, common=common, pm=pm)
+    prof_raw = str(getattr(base, "broker_profile", "perps") or "perps").strip().lower()
+    if prof_raw in ("spot",):
+        prof = "spot"
+    elif ("icmarkets" in prof_raw) or ("mt5" in prof_raw) or (prof_raw == "cfd"):
+        prof = "cfd"
+    else:
+        prof = "perps"
+
+    broker = BrokerConfig(
+        profile=str(prof),
+        perps_maintenance_margin_rate=float(getattr(base, "perps_maintenance_margin_rate", 0.01) or 0.01),
+        cfd_initial_margin_rate=float(getattr(base, "cfd_initial_margin_rate", 0.01) or 0.01),
+        cfd_stopout_margin_level=float(getattr(base, "cfd_stopout_margin_level", 0.5) or 0.5),
+    )
+
+    execution = ExecutionConstraints(
+        min_qty=float(getattr(base, "min_qty", 0.0) or 0.0),
+        qty_step=float(getattr(base, "qty_step", 0.0) or 0.0),
+        min_notional=float(getattr(base, "min_notional", 0.0) or 0.0),
+    )
+
+    return BacktestConfig(
+        initial_equity=base.initial_equity,
+        costs=costs,
+        risk=risk,
+        common=common,
+        pm=pm,
+        broker=broker,
+        execution=execution,
+    )
 
 
 def run_optimization(
@@ -961,8 +1100,12 @@ def run_optimization(
                 "strategy": strat.name,
                 "return_train_pct": res_train.net_return_pct,
                 "dd_train_pct": res_train.max_drawdown_pct,
+                "exec_reject_rate_train": float(getattr(res_train, "exec_reject_rate", 0.0)),
+                "exec_round_rate_train": float(getattr(res_train, "exec_round_rate", 0.0)),
                 "return_test_pct": res_test.net_return_pct,
                 "dd_test_pct": res_test.max_drawdown_pct,
+                "exec_reject_rate_test": float(getattr(res_test, "exec_reject_rate", 0.0)),
+                "exec_round_rate_test": float(getattr(res_test, "exec_round_rate", 0.0)),
                 "sharpe_train": sharpe_train,
                 "sharpe_test": sharpe_test,
                 "median_pnl_per_position_train": median_pnl_train,

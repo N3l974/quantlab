@@ -307,6 +307,18 @@ def _build_manifest(
             "risk": {
                 "risk_pct": cfg.risk_pct,
                 "max_position_notional_pct_equity": cfg.max_position_notional_pct_equity,
+                "max_leverage": getattr(cfg, "max_leverage", None),
+            },
+            "execution": {
+                "min_qty": float(getattr(cfg, "min_qty", 0.0) or 0.0),
+                "qty_step": float(getattr(cfg, "qty_step", 0.0) or 0.0),
+                "min_notional": float(getattr(cfg, "min_notional", 0.0) or 0.0),
+            },
+            "broker": {
+                "profile": str(getattr(cfg, "broker_profile", "perps")),
+                "perps_maintenance_margin_rate": float(getattr(cfg, "perps_maintenance_margin_rate", 0.01) or 0.01),
+                "cfd_initial_margin_rate": float(getattr(cfg, "cfd_initial_margin_rate", 0.01) or 0.01),
+                "cfd_stopout_margin_level": float(getattr(cfg, "cfd_stopout_margin_level", 0.5) or 0.5),
             },
             "common": common,
             "position_manager": pm,
@@ -376,6 +388,9 @@ def main() -> None:
         data_root_default = default_data_root()
         data_root = Path(st.text_input("Data root", value=str(data_root_default)))
 
+        broker_profile_cfg = "perps"
+        broker_preset = "hyperliquid_perps"
+
         if mode == "Backtest":
             try:
                 vault_files = sorted([p for p in vault_dir.rglob("*.json") if p.is_file()])
@@ -421,9 +436,13 @@ def main() -> None:
                 data_snap = selected_vault_champion_payload.get("data_snapshot") or {}
                 champ_source = str(data_snap.get("source") or champ_source)
 
+                cfg_snap = selected_vault_champion_payload.get("config_snapshot") or {}
+                broker_profile_cfg = str(cfg_snap.get("broker_profile") or broker_profile_cfg)
+                broker_preset = str(cfg_snap.get("broker_preset") or broker_preset)
+
             broker_profile = str(
                 st.selectbox(
-                    "Broker profile",
+                    "Data source",
                     options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
                     index=(
                         1
@@ -434,55 +453,233 @@ def main() -> None:
                     help="Backtest follows the champion snapshot source.",
                 )
             )
-        else:
-            broker_profile = str(
-                st.selectbox(
-                    "Broker profile",
-                    options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
-                    index=0,
-                    help="Chooses the OHLCV source folder under data/market_data/ohlcv/<source>/..."
-                )
+
+            st.selectbox(
+                "Risk model",
+                options=["perps", "cfd", "spot"],
+                index=0 if broker_profile_cfg == "perps" else (1 if broker_profile_cfg == "cfd" else 2),
+                disabled=True,
+                help="Backtest follows the champion config snapshot.",
             )
+        else:
+            if mode == "Optimize":
+                broker_profile = str(
+                    st.selectbox(
+                        "Data source",
+                        options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
+                        index=0,
+                        help="Chooses the OHLCV source folder under data/market_data/ohlcv/<source>/...",
+                    )
+                )
+
+                if str(st.session_state.get("broker_preset") or "") == "custom":
+                    st.session_state["broker_preset"] = "hyperliquid_perps"
+
+                c_preset, c_custom = st.columns([3, 1])
+                with c_preset:
+                    broker_preset = str(
+                        st.selectbox(
+                            "Broker profile",
+                            options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
+                            index=0,
+                            key="broker_preset",
+                            help="Preset that controls risk model + default fees/slippage. Data source remains independent.",
+                        )
+                    )
+                with c_custom:
+                    if "broker_custom_overrides" not in st.session_state:
+                        st.session_state["broker_custom_overrides"] = False
+                    broker_custom_overrides = bool(
+                        st.checkbox(
+                            "Custom",
+                            key="broker_custom_overrides",
+                            help="Show and override broker-dependent settings.",
+                        )
+                    )
+            else:
+                broker_profile = str(
+                    st.selectbox(
+                        "Data source",
+                        options=["hyperliquid_perps", "binance_futures", "mt5_icmarkets"],
+                        index=0,
+                        help="Chooses the OHLCV source folder under data/market_data/ohlcv/<source>/..."
+                    )
+                )
 
         if mode == "Optimize":
             st.subheader("Execution")
+            broker_profile_cfg_preset = str(broker_profile_cfg)
             fee_default = 4.5
             slippage_default = 1.0
-            if str(broker_profile) == "binance_futures":
+            min_qty_default = 0.0
+            qty_step_default = 0.0
+            min_notional_default = 0.0
+            perps_maintenance_margin_rate_default = 0.01
+            cfd_initial_margin_rate_default = 0.01
+            cfd_stopout_margin_level_default = 0.5
+            max_leverage_default_x = 0.0
+
+            if str(broker_preset) == "hyperliquid_perps":
+                broker_profile_cfg_preset = "perps"
+                fee_default = 4.5
+                slippage_default = 1.0
+                min_qty_default = 0.0
+                qty_step_default = 0.001
+                min_notional_default = 10.0
+                max_leverage_default_x = 50.0
+            elif str(broker_preset) == "binance_futures":
+                broker_profile_cfg_preset = "perps"
                 fee_default = 4.0
                 slippage_default = 0.5
-            if str(broker_profile) == "mt5_icmarkets":
+                min_qty_default = 0.0
+                qty_step_default = 0.001
+                min_notional_default = 5.0
+                max_leverage_default_x = 50.0
+            elif str(broker_preset) == "mt5_icmarkets":
+                broker_profile_cfg_preset = "cfd"
                 fee_default = 0.0
                 slippage_default = 1.0
+                min_qty_default = 0.01
+                qty_step_default = 0.01
+                min_notional_default = 0.0
+                max_leverage_default_x = 2.0
 
-            if "last_broker_profile" not in st.session_state:
-                st.session_state["last_broker_profile"] = str(broker_profile)
+            broker_custom_overrides = bool(st.session_state.get("broker_custom_overrides") or False)
+
+            if "last_broker_preset" not in st.session_state:
+                st.session_state["last_broker_preset"] = str(broker_preset)
+            if "last_broker_custom_overrides" not in st.session_state:
+                st.session_state["last_broker_custom_overrides"] = bool(broker_custom_overrides)
+
+            if "last_max_leverage_default_x" not in st.session_state:
+                st.session_state["last_max_leverage_default_x"] = float(max_leverage_default_x)
+            if "max_leverage_x" not in st.session_state:
+                st.session_state["max_leverage_x"] = float(max_leverage_default_x)
+
             if "fee_bps" not in st.session_state:
                 st.session_state["fee_bps"] = float(fee_default)
             if "slippage_bps" not in st.session_state:
                 st.session_state["slippage_bps"] = float(slippage_default)
+            if "min_qty" not in st.session_state:
+                st.session_state["min_qty"] = float(min_qty_default)
+            if "qty_step" not in st.session_state:
+                st.session_state["qty_step"] = float(qty_step_default)
+            if "min_notional" not in st.session_state:
+                st.session_state["min_notional"] = float(min_notional_default)
+            if "broker_profile_cfg" not in st.session_state:
+                st.session_state["broker_profile_cfg"] = str(broker_profile_cfg_preset)
+            if "perps_maintenance_margin_rate" not in st.session_state:
+                st.session_state["perps_maintenance_margin_rate"] = float(perps_maintenance_margin_rate_default)
+            if "cfd_initial_margin_rate" not in st.session_state:
+                st.session_state["cfd_initial_margin_rate"] = float(cfd_initial_margin_rate_default)
+            if "cfd_stopout_margin_level" not in st.session_state:
+                st.session_state["cfd_stopout_margin_level"] = float(cfd_stopout_margin_level_default)
 
-            if str(st.session_state.get("last_broker_profile")) != str(broker_profile):
+            preset_changed = str(st.session_state.get("last_broker_preset")) != str(broker_preset)
+            custom_turned_off = bool(st.session_state.get("last_broker_custom_overrides")) and (not broker_custom_overrides)
+            if preset_changed or custom_turned_off:
+                try:
+                    last_default = float(st.session_state.get("last_max_leverage_default_x") or 0.0)
+                    cur = float(st.session_state.get("max_leverage_x") or 0.0)
+                    if abs(cur - last_default) <= 1e-12:
+                        st.session_state["max_leverage_x"] = float(max_leverage_default_x)
+                except Exception:
+                    pass
+                st.session_state["last_max_leverage_default_x"] = float(max_leverage_default_x)
+                if not broker_custom_overrides:
+                    st.session_state["fee_bps"] = float(fee_default)
+                    st.session_state["slippage_bps"] = float(slippage_default)
+                    st.session_state["min_qty"] = float(min_qty_default)
+                    st.session_state["qty_step"] = float(qty_step_default)
+                    st.session_state["min_notional"] = float(min_notional_default)
+                    st.session_state["broker_profile_cfg"] = str(broker_profile_cfg_preset)
+                    st.session_state["perps_maintenance_margin_rate"] = float(perps_maintenance_margin_rate_default)
+                    st.session_state["cfd_initial_margin_rate"] = float(cfd_initial_margin_rate_default)
+                    st.session_state["cfd_stopout_margin_level"] = float(cfd_stopout_margin_level_default)
+                st.session_state["last_broker_preset"] = str(broker_preset)
+                st.session_state["last_broker_custom_overrides"] = bool(broker_custom_overrides)
+
+            if not broker_custom_overrides:
+                broker_profile_cfg = str(broker_profile_cfg_preset)
                 st.session_state["fee_bps"] = float(fee_default)
                 st.session_state["slippage_bps"] = float(slippage_default)
-                st.session_state["last_broker_profile"] = str(broker_profile)
+                st.session_state["min_qty"] = float(min_qty_default)
+                st.session_state["qty_step"] = float(qty_step_default)
+                st.session_state["min_notional"] = float(min_notional_default)
+                st.session_state["broker_profile_cfg"] = str(broker_profile_cfg_preset)
+                st.session_state["perps_maintenance_margin_rate"] = float(perps_maintenance_margin_rate_default)
+                st.session_state["cfd_initial_margin_rate"] = float(cfd_initial_margin_rate_default)
+                st.session_state["cfd_stopout_margin_level"] = float(cfd_stopout_margin_level_default)
 
-            fee_bps = float(
-                st.number_input(
-                    "Fee (taker) bps",
-                    min_value=0.0,
-                    step=0.1,
-                    key="fee_bps",
+                fee_bps = float(fee_default)
+                slippage_bps = float(slippage_default)
+                min_qty = float(min_qty_default)
+                qty_step = float(qty_step_default)
+                min_notional = float(min_notional_default)
+
+                st.caption(f"Risk model: {str(broker_profile_cfg)}")
+                st.caption(f"Fee/slippage: {float(fee_bps):g} bps / {float(slippage_bps):g} bps")
+                st.caption(
+                    f"Exec constraints: min_qty={float(min_qty):g}, qty_step={float(qty_step):g}, min_notional={float(min_notional):g}"
                 )
-            )
-            slippage_bps = float(
-                st.number_input(
-                    "Slippage bps",
-                    min_value=0.0,
-                    step=0.1,
-                    key="slippage_bps",
+            else:
+                rm = str(st.session_state.get("broker_profile_cfg") or broker_profile_cfg_preset)
+                rm_index = 0 if rm == "perps" else (1 if rm == "cfd" else 2)
+                broker_profile_cfg = str(
+                    st.selectbox(
+                        "Risk model",
+                        options=["perps", "cfd", "spot"],
+                        index=rm_index,
+                        key="broker_profile_cfg",
+                        help="Controls liquidation/margin model used by the backtester.",
+                    )
                 )
-            )
+
+                fee_bps = float(
+                    st.number_input(
+                        "Fee (taker) bps",
+                        min_value=0.0,
+                        step=0.1,
+                        key="fee_bps",
+                    )
+                )
+                slippage_bps = float(
+                    st.number_input(
+                        "Slippage bps",
+                        min_value=0.0,
+                        step=0.1,
+                        key="slippage_bps",
+                    )
+                )
+
+                st.subheader("Execution constraints")
+                min_qty = float(
+                    st.number_input(
+                        "Min qty",
+                        min_value=0.0,
+                        step=0.01,
+                        key="min_qty",
+                        help="Minimum order quantity (min lot). 0 disables.",
+                    )
+                )
+                qty_step = float(
+                    st.number_input(
+                        "Qty step",
+                        min_value=0.0,
+                        step=0.001,
+                        key="qty_step",
+                        help="Quantity step size. Quantity is rounded down to the step. 0 disables.",
+                    )
+                )
+                min_notional = float(
+                    st.number_input(
+                        "Min notional",
+                        min_value=0.0,
+                        step=1.0,
+                        key="min_notional",
+                        help="Minimum order value (qty*price). 0 disables.",
+                    )
+                )
 
             st.subheader("Selection filters")
             dd_threshold_pct = float(
@@ -522,6 +719,93 @@ def main() -> None:
                 )
             )
 
+            ctx_tag = str(st.session_state.get("opt_context_tag") or "")
+            if str(st.session_state.get("opt_context_applied_tag") or "") != ctx_tag:
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("max_position_notional_pct_equity")
+                    st.session_state["max_position_notional_pct_equity_manual"] = float(v) if v is not None else 100.0
+                except Exception:
+                    st.session_state["max_position_notional_pct_equity_manual"] = 100.0
+
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("max_leverage")
+                    st.session_state["max_leverage_x"] = float(v) if v is not None else 0.0
+                except Exception:
+                    st.session_state["max_leverage_x"] = 0.0
+
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("broker_preset")
+                    if v is not None and str(v) != "custom":
+                        st.session_state["broker_preset"] = str(v)
+                except Exception:
+                    pass
+
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("broker_custom_overrides")
+                    if v is None:
+                        v = bool(
+                            str((st.session_state.get("opt_context") or {}).get("broker_preset") or "")
+                            == "custom"
+                        )
+                    st.session_state["broker_custom_overrides"] = bool(v)
+                except Exception:
+                    pass
+
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("broker_profile")
+                    if v is not None:
+                        st.session_state["broker_profile_cfg"] = str(v)
+                except Exception:
+                    pass
+
+                for k in [
+                    "fee_bps",
+                    "slippage_bps",
+                    "min_qty",
+                    "qty_step",
+                    "min_notional",
+                    "perps_maintenance_margin_rate",
+                    "cfd_initial_margin_rate",
+                    "cfd_stopout_margin_level",
+                ]:
+                    try:
+                        v = (st.session_state.get("opt_context") or {}).get(k)
+                        if v is None:
+                            continue
+                        if k in {"fee_bps", "slippage_bps", "min_qty", "qty_step", "min_notional"}:
+                            st.session_state[k] = float(v)
+                        elif k in {"perps_maintenance_margin_rate", "cfd_initial_margin_rate", "cfd_stopout_margin_level"}:
+                            st.session_state[k] = float(v)
+                    except Exception:
+                        pass
+
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("storage_url")
+                    if v is None:
+                        v = os.environ.get("OPTUNA_STORAGE_URL")
+                    st.session_state["storage_url"] = str(v or "")
+                except Exception:
+                    st.session_state["storage_url"] = str(os.environ.get("OPTUNA_STORAGE_URL") or "")
+
+                st.session_state["opt_context_applied_tag"] = ctx_tag
+
+            if "storage_url" not in st.session_state:
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("storage_url")
+                    if v is None:
+                        v = os.environ.get("OPTUNA_STORAGE_URL")
+                    st.session_state["storage_url"] = str(v or "")
+                except Exception:
+                    st.session_state["storage_url"] = str(os.environ.get("OPTUNA_STORAGE_URL") or "")
+
+            storage_url_ui = str(
+                st.text_input(
+                    "Optuna storage_url",
+                    key="storage_url",
+                    help="Leave empty to use local sqlite in the run folder. Use a postgres URL for shared/multiprocess storage.",
+                )
+            ).strip()
+
             if stop_mode == "Time":
                 max_trials = 10_000_000
                 time_budget_minutes = time_budget_minutes_ui
@@ -549,6 +833,134 @@ def main() -> None:
             st.subheader("Backtest")
             initial_equity = float(st.number_input("Initial equity", min_value=10.0, value=10_000.0, step=100.0))
 
+            risk_pct_ui = float(
+                st.number_input(
+                    "Risk per trade (%)",
+                    min_value=0.0,
+                    value=1.0,
+                    step=0.1,
+                    help="Sizing uses risk_pct as a fraction (1.0% => 0.01).",
+                )
+            )
+            risk_pct = float(risk_pct_ui) / 100.0
+
+            if "max_position_notional_pct_equity_manual" not in st.session_state:
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("max_position_notional_pct_equity")
+                    st.session_state["max_position_notional_pct_equity_manual"] = float(v) if v is not None else 100.0
+                except Exception:
+                    st.session_state["max_position_notional_pct_equity_manual"] = 100.0
+
+            if "max_leverage_x" not in st.session_state:
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("max_leverage")
+                    st.session_state["max_leverage_x"] = float(v) if v is not None else 0.0
+                except Exception:
+                    st.session_state["max_leverage_x"] = 0.0
+
+            if "max_leverage_initialized" not in st.session_state:
+                st.session_state["max_leverage_initialized"] = False
+            if not bool(st.session_state.get("max_leverage_initialized")):
+                try:
+                    v = (st.session_state.get("opt_context") or {}).get("max_leverage")
+                    if v is not None and float(v) > 0:
+                        st.session_state["max_position_notional_pct_equity_manual"] = float(v) * 100.0
+                except Exception:
+                    pass
+                st.session_state["max_leverage_initialized"] = True
+
+            max_leverage_ui = float(
+                st.number_input(
+                    "Max leverage (x)",
+                    min_value=0.0,
+                    step=0.5,
+                    key="max_leverage_x",
+                    help="0 disables. When set, overrides max position notional cap: max_notional_pct_equity = max_leverage * 100.",
+                )
+            )
+            max_leverage = float(max_leverage_ui)
+            if max_leverage <= 0:
+                max_leverage = None
+
+            if max_leverage is None:
+                max_position_notional_pct_equity = float(
+                    st.number_input(
+                        "Max position notional (% equity)",
+                        min_value=0.0,
+                        value=float(st.session_state.get("max_position_notional_pct_equity_manual") or 100.0),
+                        step=10.0,
+                        help="Caps abs(qty)*price as a % of equity. 100% ~ 1x notional.",
+                        key="max_position_notional_pct_equity_manual",
+                    )
+                )
+            else:
+                max_position_notional_pct_equity = float(max_leverage) * 100.0
+                st.number_input(
+                    "Max position notional (% equity)",
+                    min_value=0.0,
+                    value=float(max_position_notional_pct_equity),
+                    step=10.0,
+                    disabled=True,
+                    help="Derived from max leverage.",
+                )
+                st.caption(f"Effective notional cap: {float(max_position_notional_pct_equity):.1f}% (~{float(max_leverage):.2f}x)")
+
+            broker_custom_overrides = bool(st.session_state.get("broker_custom_overrides") or False)
+
+            if "perps_maintenance_margin_rate" not in st.session_state:
+                st.session_state["perps_maintenance_margin_rate"] = 0.01
+            if "cfd_initial_margin_rate" not in st.session_state:
+                st.session_state["cfd_initial_margin_rate"] = 0.01
+            if "cfd_stopout_margin_level" not in st.session_state:
+                st.session_state["cfd_stopout_margin_level"] = 0.5
+
+            if broker_custom_overrides:
+                st.subheader("Broker")
+                perps_maintenance_margin_rate = float(
+                    st.number_input(
+                        "Perps maintenance margin rate",
+                        min_value=0.0,
+                        step=0.001,
+                        format="%.3f",
+                        key="perps_maintenance_margin_rate",
+                        disabled=(broker_profile_cfg != "perps"),
+                        help="Used for liquidation: liquidate if equity_worst <= mmr * notional.",
+                    )
+                )
+                cfd_initial_margin_rate = float(
+                    st.number_input(
+                        "CFD initial margin rate",
+                        min_value=0.0,
+                        step=0.001,
+                        format="%.3f",
+                        key="cfd_initial_margin_rate",
+                        disabled=(broker_profile_cfg != "cfd"),
+                        help="Used margin = imr * notional.",
+                    )
+                )
+                cfd_stopout_margin_level = float(
+                    st.number_input(
+                        "CFD stopout margin level",
+                        min_value=0.0,
+                        step=0.05,
+                        format="%.2f",
+                        key="cfd_stopout_margin_level",
+                        disabled=(broker_profile_cfg != "cfd"),
+                        help="Liquidate if equity_worst / used_margin <= stopout.",
+                    )
+                )
+            else:
+                perps_maintenance_margin_rate = float(st.session_state.get("perps_maintenance_margin_rate") or 0.01)
+                cfd_initial_margin_rate = float(st.session_state.get("cfd_initial_margin_rate") or 0.01)
+                cfd_stopout_margin_level = float(st.session_state.get("cfd_stopout_margin_level") or 0.5)
+
+                if broker_profile_cfg == "perps":
+                    st.caption(f"Perps maintenance margin rate: {float(perps_maintenance_margin_rate):.3f}")
+                elif broker_profile_cfg == "cfd":
+                    st.caption(
+                        f"CFD margin: imr={float(cfd_initial_margin_rate):.3f}, stopout={float(cfd_stopout_margin_level):.2f}"
+                    )
+
             st.subheader("Walkforward")
             train_frac = float(
                 st.slider(
@@ -562,52 +974,23 @@ def main() -> None:
             )
 
             st.subheader("Ranking")
-            custom_candidate_settings = bool(
-                st.checkbox(
-                    "Custom candidate settings",
-                    value=False,
-                    help="If disabled, candidate pool and candidate cap are selected automatically based on trials and number of enabled strategies.",
+            candidate_pool = str(
+                st.selectbox(
+                    "Candidate pool",
+                    options=["pareto", "complete"],
+                    index=0,
+                    help="pareto = fast (best_trials), complete = slower (all COMPLETE trials, capped by pareto_candidates_max).",
                 )
             )
-
-            enabled_strats = st.session_state.get("enabled_strategies")
-            if isinstance(enabled_strats, list) and enabled_strats:
-                n_strats_for_auto = len(enabled_strats)
-            else:
-                try:
-                    n_strats_for_auto = len([s.name for s in builtin_strategies()])
-                except Exception:
-                    n_strats_for_auto = 1
-
-            rec_pool, rec_cap = _recommend_candidate_settings(
-                max_trials=int(max_trials),
-                n_strats=int(n_strats_for_auto),
-                stop_mode=str(stop_mode),
+            pareto_candidates_max = int(
+                st.number_input(
+                    "Max candidates per strategy",
+                    min_value=10,
+                    value=100,
+                    step=10,
+                    help="Hard cap applied before computing test metrics (keeps report build fast).",
+                )
             )
-
-            if custom_candidate_settings:
-                candidate_pool = str(
-                    st.selectbox(
-                        "Candidate pool",
-                        options=["pareto", "complete"],
-                        index=(0 if rec_pool != "complete" else 1),
-                        help="pareto = fast (best_trials), complete = slower (all COMPLETE trials, capped by pareto_candidates_max).",
-                    )
-                )
-                pareto_candidates_max = int(
-                    st.number_input(
-                        "Max candidates per strategy",
-                        min_value=10,
-                        value=int(rec_cap),
-                        step=10,
-                        help="Hard cap applied before computing test metrics (keeps report build fast).",
-                    )
-                )
-            else:
-                candidate_pool = str(rec_pool)
-                pareto_candidates_max = int(rec_cap)
-                st.caption(f"Candidate pool: {candidate_pool} (auto)")
-                st.caption(f"Max candidates per strategy: {pareto_candidates_max} (auto)")
 
             global_top_k = int(
                 st.number_input(
@@ -692,6 +1075,14 @@ def main() -> None:
             strategies=cfg_payload.get("strategies"),
             risk_pct=float(cfg_payload.get("risk_pct", 0.01)),
             max_position_notional_pct_equity=float(cfg_payload.get("max_position_notional_pct_equity", 100.0)),
+            max_leverage=float(cfg_payload["max_leverage"]) if cfg_payload.get("max_leverage") is not None else None,
+            min_qty=float(cfg_payload.get("min_qty", 0.0)),
+            qty_step=float(cfg_payload.get("qty_step", 0.0)),
+            min_notional=float(cfg_payload.get("min_notional", 0.0)),
+            broker_profile=str(cfg_payload.get("broker_profile", "perps")),
+            perps_maintenance_margin_rate=float(cfg_payload.get("perps_maintenance_margin_rate", 0.01)),
+            cfd_initial_margin_rate=float(cfg_payload.get("cfd_initial_margin_rate", 0.01)),
+            cfd_stopout_margin_level=float(cfg_payload.get("cfd_stopout_margin_level", 0.5)),
             pareto_candidates_max=int(cfg_payload.get("pareto_candidates_max", 50)),
             candidate_pool=str(cfg_payload.get("candidate_pool", "pareto")),
             global_top_k=int(cfg_payload.get("global_top_k", 50)),
@@ -734,9 +1125,16 @@ def main() -> None:
         df = df.reset_index(drop=True)
 
         cfg = _cfg_from_report(ctx_cfg)
-        db_path = run_dir / "optuna.db"
-        storage_url = f"sqlite:///{db_path.as_posix()}"
-        report = build_report_from_storage(df=df, config=cfg, storage_url=storage_url)
+
+        cfg_storage_url = str((ctx_cfg or {}).get("storage_url") or "").strip()
+        if cfg_storage_url:
+            storage_url = cfg_storage_url
+        else:
+            db_path = run_dir / "optuna.db"
+            storage_url = f"sqlite:///{db_path.as_posix()}"
+
+        study_name_prefix = run_dir.name if str(storage_url).strip().lower().startswith("postgres") else None
+        report = build_report_from_storage(df=df, config=cfg, storage_url=storage_url, study_name_prefix=study_name_prefix)
 
         leaderboard_path = run_dir / "leaderboard.csv"
         global_leaderboard_path = run_dir / "global_leaderboard.csv"
@@ -799,6 +1197,12 @@ def main() -> None:
                 "initial_equity": cfg.initial_equity,
                 "fee_bps": cfg.fee_bps,
                 "slippage_bps": cfg.slippage_bps,
+                "broker_preset": str(
+                    st.session_state.get("broker_preset")
+                    or (st.session_state.get("opt_context") or {}).get("broker_preset")
+                    or ""
+                ),
+                "broker_custom_overrides": bool(st.session_state.get("broker_custom_overrides") or False),
                 "dd_threshold_pct": cfg.dd_threshold_pct,
                 "min_trades_train": cfg.min_trades_train,
                 "min_trades_test": cfg.min_trades_test,
@@ -890,10 +1294,16 @@ def main() -> None:
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Net return", f"{res.net_return_pct:.2f}%")
-        c2.metric("Max DD", f"{res.max_drawdown_pct:.2f}%")
+        c2.metric("Max DD (close)", f"{res.max_drawdown_pct:.2f}%")
         c3.metric("Sharpe (equity)", f"{sharpe_eq:.2f}")
         c4.metric("Return annualized", f"{ann_return * 100.0:.2f}%")
         c5.metric("Return monthly", f"{mon_return * 100.0:.2f}%")
+
+        c10, c11, c12, c13 = st.columns(4)
+        c10.metric("Max DD (intrabar)", f"{float(getattr(res, 'max_drawdown_intrabar_pct', 0.0)):.2f}%")
+        c11.metric("Liquidated", str(bool(getattr(res, "liquidated", False))))
+        c12.metric("Peak notional % eq", f"{float(getattr(res, 'peak_notional_pct_equity', 0.0)):.2f}%")
+        c13.metric("Cap hit rate", f"{100.0 * float(getattr(res, 'cap_hit_rate', 0.0)):.1f}%")
 
         c6, c7, c8, c9 = st.columns(4)
         c6.metric("Positions", int(overview.get("positions", 0)))
@@ -925,8 +1335,14 @@ def main() -> None:
         drop_keys = {
             "return_train_pct",
             "dd_train_pct",
+            "dd_train_intrabar_pct",
+            "exec_reject_rate_train",
+            "exec_round_rate_train",
             "return_test_pct",
             "dd_test_pct",
+            "dd_test_intrabar_pct",
+            "exec_reject_rate_test",
+            "exec_round_rate_test",
             "sharpe_train",
             "sharpe_test",
             "median_pnl_per_position_train",
@@ -949,6 +1365,14 @@ def main() -> None:
             "grid_max_adds_used_test",
             "grid_max_multiplier_used_train",
             "grid_max_multiplier_used_test",
+            "liquidated_train",
+            "liquidated_test",
+            "peak_notional_pct_equity_train",
+            "peak_notional_pct_equity_test",
+            "peak_qty_mult_train",
+            "peak_qty_mult_test",
+            "cap_hit_rate_train",
+            "cap_hit_rate_test",
             "eligible",
             "trial",
             "seconds",
@@ -1305,6 +1729,12 @@ def main() -> None:
         run_dir = selected_run_dir
         report_payload = selected_report_payload
 
+        try:
+            st.session_state["opt_context"] = report_payload.get("config") or {}
+            st.session_state["opt_context_tag"] = str(run_dir)
+        except Exception:
+            pass
+
         if mode == "Analyze":
             st.caption(str(run_dir))
 
@@ -1419,6 +1849,37 @@ def main() -> None:
                 pick_rows = global_lb.to_dict(orient="records")
                 pick_label = lambda r: f"post#{r.get('rank_post_wf')} pre#{r.get('rank_pre_wf')} | {r.get('strategy')} | trial {r.get('trial')}"
                 picked = st.selectbox("Inspect candidate", options=pick_rows, format_func=pick_label)
+
+                try:
+                    picked_strategy = str(picked.get("strategy") or "")
+                    picked_trial = int(pd.to_numeric(picked.get("trial"), errors="coerce"))
+                except Exception:
+                    picked_strategy = str(picked.get("strategy") or "")
+                    picked_trial = int(picked.get("trial") or 0)
+
+                cand_path = run_dir / "candidates.csv"
+                if cand_path.exists() and picked_strategy:
+                    try:
+                        cand_df = pd.read_csv(cand_path)
+                    except Exception:
+                        cand_df = pd.DataFrame()
+                    if not cand_df.empty and "strategy" in cand_df.columns and "trial" in cand_df.columns:
+                        try:
+                            cand_df["trial"] = pd.to_numeric(cand_df["trial"], errors="coerce")
+                        except Exception:
+                            pass
+                        try:
+                            row_match = cand_df[
+                                (cand_df["strategy"].astype(str) == str(picked_strategy))
+                                & (pd.to_numeric(cand_df["trial"], errors="coerce").fillna(-1).astype("int64") == int(picked_trial))
+                            ]
+                            if not row_match.empty:
+                                picked_full = dict(picked)
+                                picked_full.update(row_match.iloc[0].to_dict())
+                                picked = picked_full
+                        except Exception:
+                            pass
+
                 params = _candidate_params(picked)
 
                 st.subheader("Inspect candidate")
@@ -1432,11 +1893,35 @@ def main() -> None:
                 k3.metric("Sharpe (test)", f"{float(picked.get('sharpe_test') or 0.0):.2f}")
                 k4.metric("Trades (test)", int(picked.get("trades_test") or 0))
 
+                k9, k10, k11, k12 = st.columns(4)
+                k9.metric("Max DD intrabar (test)", f"{float(picked.get('dd_test_intrabar_pct') or 0.0):.2f}%")
+                k10.metric("Liquidated (test)", str(bool(picked.get("liquidated_test") or False)))
+                k11.metric("Peak notional % eq (test)", f"{float(picked.get('peak_notional_pct_equity_test') or 0.0):.2f}%")
+                k12.metric("Cap hit rate (test)", f"{100.0 * float(picked.get('cap_hit_rate_test') or 0.0):.1f}%")
+
+                k17, k18, k19, k20 = st.columns(4)
+                k17.metric("Exec reject (test)", f"{100.0 * float(picked.get('exec_reject_rate_test') or 0.0):.1f}%")
+                k18.metric("Exec round (test)", f"{100.0 * float(picked.get('exec_round_rate_test') or 0.0):.1f}%")
+                k19.metric("Min qty", f"{float(getattr(cfg, 'min_qty', 0.0) or 0.0):g}")
+                k20.metric("Min notional", f"{float(getattr(cfg, 'min_notional', 0.0) or 0.0):g}")
+
                 k5, k6, k7, k8 = st.columns(4)
                 k5.metric("Return (train)", f"{float(picked.get('return_train_pct') or 0.0):.2f}%")
                 k6.metric("Max DD (train)", f"{float(picked.get('dd_train_pct') or 0.0):.2f}%")
                 k7.metric("Sharpe (train)", f"{float(picked.get('sharpe_train') or 0.0):.2f}")
                 k8.metric("Trades (train)", int(picked.get("trades_train") or 0))
+
+                k13, k14, k15, k16 = st.columns(4)
+                k13.metric("Max DD intrabar (train)", f"{float(picked.get('dd_train_intrabar_pct') or 0.0):.2f}%")
+                k14.metric("Liquidated (train)", str(bool(picked.get("liquidated_train") or False)))
+                k15.metric("Peak notional % eq (train)", f"{float(picked.get('peak_notional_pct_equity_train') or 0.0):.2f}%")
+                k16.metric("Cap hit rate (train)", f"{100.0 * float(picked.get('cap_hit_rate_train') or 0.0):.1f}%")
+
+                k21, k22, k23, k24 = st.columns(4)
+                k21.metric("Exec reject (train)", f"{100.0 * float(picked.get('exec_reject_rate_train') or 0.0):.1f}%")
+                k22.metric("Exec round (train)", f"{100.0 * float(picked.get('exec_round_rate_train') or 0.0):.1f}%")
+                k23.metric("Qty step", f"{float(getattr(cfg, 'qty_step', 0.0) or 0.0):g}")
+                k24.metric("Broker preset", str((st.session_state.get('last_broker_preset') or '')))
 
                 pm_mode_val = str(params.get("pm_mode") or picked.get("pm_mode") or "")
                 if pm_mode_val:
@@ -1504,7 +1989,7 @@ def main() -> None:
                         r1, r2, r3, r4, r5 = st.columns(5)
                         r1.metric("Return (period)", f"{float(kpis.get('return_period_pct') or 0.0):.2f}%")
                         r2.metric("Return annualized", f"{float(kpis.get('return_annualized_pct') or 0.0):.2f}%")
-                        r3.metric("Max DD", f"{float(kpis.get('max_drawdown_pct') or 0.0):.2f}%")
+                        r3.metric("Max DD (close)", f"{float(kpis.get('max_drawdown_pct') or 0.0):.2f}%")
                         pf = kpis.get("profit_factor")
                         try:
                             pf_f = float(pf)
@@ -1512,6 +1997,12 @@ def main() -> None:
                             pf_f = 0.0
                         r4.metric("Profit factor", "∞" if pf_f == float("inf") else f"{pf_f:.2f}")
                         r5.metric("Sharpe (equity)", f"{float(kpis.get('sharpe_equity') or 0.0):.2f}")
+
+                        s1, s2, s3, s4 = st.columns(4)
+                        s1.metric("Max DD (intrabar)", f"{float(kpis.get('max_drawdown_intrabar_pct') or 0.0):.2f}%")
+                        s2.metric("Liquidated", str(bool(kpis.get("liquidated") or False)))
+                        s3.metric("Peak notional % eq", f"{float(kpis.get('peak_notional_pct_equity') or 0.0):.2f}%")
+                        s4.metric("Cap hit rate", f"{100.0 * float(kpis.get('cap_hit_rate') or 0.0):.1f}%")
 
                         s1, s2, s3, s4, s5 = st.columns(5)
                         s1.metric("Positions", int(overview.get("positions", 0) or 0))
@@ -1764,12 +2255,22 @@ def main() -> None:
                 timeframe=timeframe,
                 pm_mode="auto",
                 strategies=selected if selected else None,
+                risk_pct=float(risk_pct),
+                max_position_notional_pct_equity=float(max_position_notional_pct_equity),
+                max_leverage=max_leverage,
+                min_qty=float(min_qty),
+                qty_step=float(qty_step),
+                min_notional=float(min_notional),
                 train_frac=float(train_frac),
                 pareto_candidates_max=int(pareto_candidates_max),
                 candidate_pool=str(candidate_pool),
                 global_top_k=int(global_top_k),
                 ranking_metric=str(ranking_metric),
                 require_positive_train_metric_for_test=bool(require_positive_train_metric_for_test),
+                broker_profile=str(broker_profile_cfg),
+                perps_maintenance_margin_rate=float(perps_maintenance_margin_rate),
+                cfd_initial_margin_rate=float(cfd_initial_margin_rate),
+                cfd_stopout_margin_level=float(cfd_stopout_margin_level),
             )
 
             run_id = time.strftime("%Y%m%d_%H%M%S")
@@ -1827,12 +2328,9 @@ def main() -> None:
                             "fee_bps": cfg.fee_bps,
                             "slippage_bps": cfg.slippage_bps,
                             "dd_threshold_pct": cfg.dd_threshold_pct,
-                            "storage_url": str(
-                                os.environ.get(
-                                    "OPTUNA_STORAGE_URL",
-                                    "postgresql+psycopg2://postgres:optuna@localhost:5432/optuna",
-                                )
-                            ),
+                            "broker_preset": str(broker_preset),
+                            "broker_custom_overrides": bool(st.session_state.get("broker_custom_overrides") or False),
+                            "storage_url": str(storage_url_ui),
                             "optuna_objective_metric": str(optuna_objective_metric),
                             "require_positive_train_metric_for_test": bool(require_positive_train_metric_for_test),
                             "min_trades_train": cfg.min_trades_train,
@@ -1846,6 +2344,14 @@ def main() -> None:
                             "strategies": cfg.strategies,
                             "risk_pct": cfg.risk_pct,
                             "max_position_notional_pct_equity": cfg.max_position_notional_pct_equity,
+                            "max_leverage": getattr(cfg, "max_leverage", None),
+                            "min_qty": float(getattr(cfg, "min_qty", 0.0) or 0.0),
+                            "qty_step": float(getattr(cfg, "qty_step", 0.0) or 0.0),
+                            "min_notional": float(getattr(cfg, "min_notional", 0.0) or 0.0),
+                            "broker_profile": str(getattr(cfg, "broker_profile", "perps")),
+                            "perps_maintenance_margin_rate": float(getattr(cfg, "perps_maintenance_margin_rate", 0.01) or 0.01),
+                            "cfd_initial_margin_rate": float(getattr(cfg, "cfd_initial_margin_rate", 0.01) or 0.01),
+                            "cfd_stopout_margin_level": float(getattr(cfg, "cfd_stopout_margin_level", 0.5) or 0.5),
                             "pareto_candidates_max": cfg.pareto_candidates_max,
                             "candidate_pool": cfg.candidate_pool,
                             "global_top_k": cfg.global_top_k,
@@ -1961,6 +2467,8 @@ def main() -> None:
                         "initial_equity": cfg.initial_equity if cfg is not None else None,
                         "fee_bps": cfg.fee_bps if cfg is not None else None,
                         "slippage_bps": cfg.slippage_bps if cfg is not None else None,
+                        "broker_preset": str(broker_preset),
+                        "broker_custom_overrides": bool(st.session_state.get("broker_custom_overrides") or False),
                         "dd_threshold_pct": cfg.dd_threshold_pct if cfg is not None else None,
                         "min_trades_train": cfg.min_trades_train if cfg is not None else None,
                         "min_trades_test": cfg.min_trades_test if cfg is not None else None,

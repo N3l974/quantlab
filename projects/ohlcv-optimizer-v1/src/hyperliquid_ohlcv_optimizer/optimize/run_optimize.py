@@ -4,11 +4,11 @@ import argparse
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import optuna
 import pandas as pd
@@ -116,6 +116,14 @@ def _cfg_from_context(cfg_payload: dict) -> OptimizationConfig:
         strategies=cfg_payload.get("strategies"),
         risk_pct=float(cfg_payload.get("risk_pct", 0.01)),
         max_position_notional_pct_equity=float(cfg_payload.get("max_position_notional_pct_equity", 100.0)),
+        max_leverage=float(cfg_payload["max_leverage"]) if cfg_payload.get("max_leverage") is not None else None,
+        min_qty=float(cfg_payload.get("min_qty", 0.0)),
+        qty_step=float(cfg_payload.get("qty_step", 0.0)),
+        min_notional=float(cfg_payload.get("min_notional", 0.0)),
+        broker_profile=str(cfg_payload.get("broker_profile", cfg_payload.get("source", "perps"))),
+        perps_maintenance_margin_rate=float(cfg_payload.get("perps_maintenance_margin_rate", 0.01)),
+        cfd_initial_margin_rate=float(cfg_payload.get("cfd_initial_margin_rate", 0.01)),
+        cfd_stopout_margin_level=float(cfg_payload.get("cfd_stopout_margin_level", 0.5)),
         pareto_candidates_max=int(cfg_payload.get("pareto_candidates_max", 50)),
         candidate_pool=str(cfg_payload.get("candidate_pool", "pareto")),
         global_top_k=int(cfg_payload.get("global_top_k", 50)),
@@ -270,13 +278,24 @@ def _save_report_artifacts(*, run_dir: Path, report, ctx: dict, cfg: Optimizatio
             "fee_bps": cfg.fee_bps,
             "slippage_bps": cfg.slippage_bps,
             "dd_threshold_pct": cfg.dd_threshold_pct,
-            "min_trades_train": cfg.min_trades_train,
-            "min_trades_test": cfg.min_trades_test,
+            "storage_url": storage_url,
+            "optuna_objective_metric": str((ctx.get("config") or {}).get("optuna_objective_metric") or "return_train_pct"),
             "max_trials": cfg.max_trials,
             "time_budget_seconds": cfg.time_budget_seconds,
+            "n_jobs": int(getattr(cfg, "n_jobs", 1) or 1),
             "timeframe": cfg.timeframe,
             "pm_mode": cfg.pm_mode,
             "strategies": cfg.strategies,
+            "risk_pct": cfg.risk_pct,
+            "max_position_notional_pct_equity": cfg.max_position_notional_pct_equity,
+            "max_leverage": getattr(cfg, "max_leverage", None),
+            "min_qty": float(getattr(cfg, "min_qty", 0.0) or 0.0),
+            "qty_step": float(getattr(cfg, "qty_step", 0.0) or 0.0),
+            "min_notional": float(getattr(cfg, "min_notional", 0.0) or 0.0),
+            "broker_profile": str(getattr(cfg, "broker_profile", "perps")),
+            "perps_maintenance_margin_rate": float(getattr(cfg, "perps_maintenance_margin_rate", 0.01) or 0.01),
+            "cfd_initial_margin_rate": float(getattr(cfg, "cfd_initial_margin_rate", 0.01) or 0.01),
+            "cfd_stopout_margin_level": float(getattr(cfg, "cfd_stopout_margin_level", 0.5) or 0.5),
             "pareto_candidates_max": cfg.pareto_candidates_max,
             "candidate_pool": cfg.candidate_pool,
             "global_top_k": cfg.global_top_k,
@@ -335,8 +354,22 @@ def _candidate_params_from_row(row: dict) -> dict:
     drop_keys = {
         "return_train_pct",
         "dd_train_pct",
+        "dd_train_intrabar_pct",
+        "exec_reject_rate_train",
+        "exec_round_rate_train",
         "return_test_pct",
         "dd_test_pct",
+        "dd_test_intrabar_pct",
+        "exec_reject_rate_test",
+        "exec_round_rate_test",
+        "liquidated_train",
+        "liquidated_test",
+        "peak_notional_pct_equity_train",
+        "peak_notional_pct_equity_test",
+        "peak_qty_mult_train",
+        "peak_qty_mult_test",
+        "cap_hit_rate_train",
+        "cap_hit_rate_test",
         "sharpe_train",
         "sharpe_test",
         "median_pnl_per_position_train",
@@ -548,6 +581,13 @@ def _build_candidate_analytics_artifacts(*, run_dir: Path, report, cfg: Optimiza
                     "return_period_pct": float((eq[-1] / max(eq[0], 1e-12) - 1.0) * 100.0) if eq else 0.0,
                     "return_annualized_pct": float(ann * 100.0),
                     "max_drawdown_pct": float(res.max_drawdown_pct),
+                    "max_drawdown_intrabar_pct": float(getattr(res, "max_drawdown_intrabar_pct", 0.0)),
+                    "exec_reject_rate": float(getattr(res, "exec_reject_rate", 0.0)),
+                    "exec_round_rate": float(getattr(res, "exec_round_rate", 0.0)),
+                    "liquidated": bool(getattr(res, "liquidated", False)),
+                    "peak_notional_pct_equity": float(getattr(res, "peak_notional_pct_equity", 0.0)),
+                    "peak_qty_mult": float(getattr(res, "peak_qty_mult", 0.0)),
+                    "cap_hit_rate": float(getattr(res, "cap_hit_rate", 0.0)),
                     "profit_factor": float(pf),
                     "sharpe_equity": float(sharpe_eq),
                     "period_days": float(period_days),
@@ -606,7 +646,18 @@ def main() -> None:
     else:
         db_path = run_dir / "optuna.db"
         storage_url = f"sqlite:///{db_path.as_posix()}"
-        _configure_sqlite_pragmas(db_path=db_path)
+
+    try:
+        u = str(storage_url or "").strip().lower()
+        if u.startswith("sqlite"):
+            parsed = urlparse(str(storage_url))
+            p = unquote(str(parsed.path or ""))
+            if p.startswith("/") and len(p) >= 3 and p[2] == ":":
+                p = p[1:]
+            if p and p != ":memory:":
+                _configure_sqlite_pragmas(db_path=Path(p))
+    except Exception:
+        pass
 
     connect_args = _connect_args_for_storage_url(storage_url)
     storage = optuna.storages.RDBStorage(
