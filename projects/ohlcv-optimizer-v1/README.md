@@ -10,6 +10,19 @@ Objectif:
 - sélectionner un "champion" sur le **test**: *max return sous `DD <= X`*
 - exporter un manifest JSON pour paper trading (hors infra)
 
+Points clés (état actuel):
+- **UI**: modes `Optimize` / `Backtest` / `Analyze`.
+- **Optimisation**: multi-objectif sur TRAIN (métrique configurable) + drawdown.
+- **Objectif Optuna (train)**: supporte notamment `win_rate_train`.
+- **Position management (PM)**: `none|grid|martingale` (optimisable ou forcé).
+- **TP/SL**:
+  - `tp_mode`: `pct|rr`
+  - **RR forcé** (mode “fixed RR”): `tp_mode_policy=rr_fixed` + `tp_rr_fixed`.
+- **Risk sizing**:
+  - mode `risk` (risk-based)
+  - mode `fixed_notional` (notional fixe en % equity)
+- **Runs persistés**: `runs/<run_id>_.../` avec `context.json`, `optuna.db`, `status.json`, `progress.jsonl`, `report.json`.
+
 ## Prérequis
 
 - Windows
@@ -53,6 +66,10 @@ L'optimisation est exécutée dans un **process séparé (CLI headless)** et Str
 - visualiser l'état d'un run en cours (même après refresh)
 - analyser les runs terminés (Analyze)
 
+Notes:
+- `Optimize` lance un process (runner) et écrit dans `runs/...`.
+- `Analyze` lit `runs/.../report.json` + les CSV et permet (si besoin) de **rebuild** depuis `optuna.db`.
+
 ## Données attendues
 
 Le projet lit les fichiers Parquet créés par `market-data-downloader`.
@@ -89,6 +106,34 @@ Sources typiques (selon les données téléchargées):
 - **Data source**: sélectionne la source OHLCV à lire (dossier sous `data/market_data/ohlcv/<source>/...`).
 - **Broker profile**: preset qui contrôle les paramètres "broker" (risk model, fees, slippage, contraintes d'exécution, margin/stopout).
 - **Custom**: affiche ces paramètres et permet de les override. Si `Custom` n'est pas coché, ces paramètres sont auto-set selon le preset et cachés.
+
+## Méthode d’optimisation (UI)
+
+### Objective Optuna (train)
+
+La métrique optimisée (sur TRAIN) est configurable:
+- `return_train_pct` (défaut historique)
+- `win_rate_train`
+- `sharpe_train`
+- `median_pnl_per_position_train` (+ variantes)
+
+Le drawdown TRAIN reste utilisé comme second objectif (minimisation).
+
+### Position management (PM)
+
+- **Enable position management optimization**
+  - ON: Optuna peut choisir `pm_mode` parmi `none|grid|martingale`.
+  - OFF: `pm_mode` forcé à `none`.
+
+### TP en RR forcé
+
+- **Force TP in RR mode**
+  - ON: `tp_mode_policy=rr_fixed` et la stratégie backtestera toujours avec `tp_mode=rr` et `tp_rr=tp_rr_fixed`.
+  - OFF: `tp_mode`/`tp_rr` redeviennent des paramètres Optuna (auto).
+
+### Filtre “Require positive train metric for test”
+
+Option pour filtrer/contraindre la sélection/évaluation test (utile pour éviter d’évaluer des candidats “mauvais” sur train).
 
 ## Utilisation (dans l'UI)
 
@@ -130,6 +175,15 @@ Tu peux activer/désactiver les stratégies dans l'UI.
   - `martingale`: taille augmente après perte, reset après gain
 - **Selection DD threshold (test) %**: `X` pour le filtre de sélection champion
 
+### Risk sizing (Backtest)
+
+- `risk_mode=risk`:
+  - sizing basé sur `risk_pct` et la distance au stop (SL)
+- `risk_mode=fixed_notional`:
+  - sizing basé sur un notional fixe: `fixed_notional_pct_equity`
+- `max_position_notional_pct_equity` / `max_leverage`:
+  - cap notionnel (sécurité / contraintes broker)
+
 Notes (brokers FX/CFD type MT5):
 - `fee_bps` et `slippage_bps` sont une approximation des coûts d'exécution.
 - Sur ICMarkets **Raw Spread**, une commission existe (par lot) et peut être approximée en bps.
@@ -157,6 +211,10 @@ Chaque run est persisté dans `runs/<run_id>_.../` et contient notamment:
 - `progress.jsonl`: event log (progress + best-so-far)
 - `report.json` + `*.csv`: résultats exportés en fin de run
 
+Artefacts complémentaires (selon run):
+- `candidate_analytics/`: analytics détaillés par candidat (si pré-calculés)
+- `retained_champions/`: exports manuels depuis Analyze
+
 Notes (broker preset):
 - `context.json` et `report.json` incluent `broker_preset` et `broker_custom_overrides` pour restaurer l'état de l'UI.
 
@@ -178,12 +236,41 @@ Notes:
 
 ## Logique d'optimisation (résumé)
 
-- Split chronologique **train/test = 75% / 25%**
+- Split chronologique **train/test = 75% / 25%** (param: `train_frac`)
 - Optimisation sur **train** en multi-objectif:
-  - maximize `return_train_pct`
+  - maximize `optuna_objective_metric` (ex: `return_train_pct` ou `win_rate_train`)
   - minimize `dd_train_pct`
 - On récupère le **front Pareto** et on évalue les candidats sur **test**
 - Sélection champion: **max `return_test_pct`** sous `dd_test_pct <= X`
+
+## Analyse (Analyze)
+
+Dans `Analyze`, tu peux:
+- afficher le header de la run (symbol/timeframe/trials/candles + périodes)
+- voir la **méthode d’optimisation** utilisée (objective, PM, RR forcé)
+- naviguer dans le leaderboard global
+- inspecter un candidat:
+  - `Candidate > Overview`: métriques train/test
+  - `Candidate > Analytics`: analytics détaillées (si présentes)
+  - `Candidate > Params`: paramètres optimisés
+
+### Rebuild report depuis optuna.db
+
+Si `report.json` est manquant/corrompu, le bouton **Force rebuild report from optuna.db** permet de régénérer:
+- `report.json`
+- `leaderboard.csv` / `global_leaderboard.csv` / `candidates.csv`
+
+## Troubleshooting
+
+- **Analyze vide / no_study**:
+  - vérifier que `runs/<run>/optuna.db` existe
+  - vérifier que `context.json` ne pointe pas vers un `storage_url` inexistant
+- **Pas de candidate analytics**:
+  - run ancien ou analytics non générées (UI affiche un message).
+
+## Roadmap
+
+Voir `ROADMAP.md`.
 
 ## Export paper trading
 

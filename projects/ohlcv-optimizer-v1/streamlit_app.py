@@ -1228,6 +1228,20 @@ def main() -> None:
             df = df[df["timestamp_ms"] < int(end_ms)]
         df = df.reset_index(drop=True)
 
+        optimized_start = None
+        optimized_end = None
+        train_start = None
+        train_end = None
+        test_start = None
+        test_end = None
+        try:
+            if not df.empty and "timestamp_ms" in df.columns:
+                optimized_start = _ms_to_yyyy_mm_dd(int(df["timestamp_ms"].iloc[0]))
+                optimized_end = _ms_to_yyyy_mm_dd(int(df["timestamp_ms"].iloc[-1]))
+        except Exception:
+            optimized_start = None
+            optimized_end = None
+
         cfg = _cfg_from_report(ctx_cfg)
 
         cfg_storage_url = str((ctx_cfg or {}).get("storage_url") or "").strip()
@@ -1266,7 +1280,26 @@ def main() -> None:
             except Exception:
                 pass
 
-        cut = int(len(df) * float(getattr(cfg, "train_frac", 0.75))) if len(df) else 0
+        n = int(len(df))
+        train_frac_used = float(getattr(cfg, "train_frac", 0.75) or 0.75)
+        cut = int(n * train_frac_used) if n else 0
+        if n >= 10:
+            cut = max(1, min(n - 1, int(cut)))
+        else:
+            cut = max(0, min(n, int(cut)))
+
+        if optimized_start is not None and optimized_end is not None and n > 0:
+            train_start = optimized_start
+            try:
+                train_end = _ms_to_yyyy_mm_dd(int(df["timestamp_ms"].iloc[max(0, int(cut) - 1)]))
+            except Exception:
+                train_end = optimized_end
+
+            try:
+                test_start = _ms_to_yyyy_mm_dd(int(df["timestamp_ms"].iloc[min(int(cut), n - 1)]))
+            except Exception:
+                test_start = train_end
+            test_end = optimized_end
 
         report_payload = {
             "project": "ohlcv-optimizer-v1",
@@ -1287,12 +1320,12 @@ def main() -> None:
                 "end": None,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
-                "optimized_start": None,
-                "optimized_end": None,
-                "train_start": None,
-                "train_end": None,
-                "test_start": None,
-                "test_end": None,
+                "optimized_start": optimized_start,
+                "optimized_end": optimized_end,
+                "train_start": train_start,
+                "train_end": train_end,
+                "test_start": test_start,
+                "test_end": test_end,
                 "candles_total": int(len(df)),
                 "candles_train": int(cut),
                 "candles_test": int(max(0, int(len(df)) - int(cut))),
@@ -1514,6 +1547,175 @@ def main() -> None:
                 pass
             params[k] = v
         return params
+
+    def _load_candidate_analytics(*, run_dir: Path, picked: dict) -> dict | None:
+        analytics_dir = run_dir / "candidate_analytics"
+        try:
+            strat_name = str(picked.get("strategy") or "")
+            trial_num = int(picked.get("trial") or 0)
+        except Exception:
+            strat_name = str(picked.get("strategy") or "")
+            trial_num = 0
+
+        if not strat_name or (not analytics_dir.exists()):
+            return None
+
+        p = analytics_dir / f"{_safe_name(strat_name)}__trial_{int(trial_num)}.json"
+        if not p.exists():
+            return None
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _render_candidate_overview(*, picked: dict, params: dict, cfg_info: dict) -> None:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Return (test)", f"{float(picked.get('return_test_pct') or 0.0):.2f}%")
+        k2.metric("Max DD (test)", f"{float(picked.get('dd_test_pct') or 0.0):.2f}%")
+        k3.metric("Sharpe (test)", f"{float(picked.get('sharpe_test') or 0.0):.2f}")
+        k4.metric("Trades (test)", int(picked.get("trades_test") or 0))
+
+        k9, k10, k11, k12 = st.columns(4)
+        k9.metric("Max DD intrabar (test)", f"{float(picked.get('dd_test_intrabar_pct') or 0.0):.2f}%")
+        k10.metric("Liquidated (test)", str(bool(picked.get("liquidated_test") or False)))
+        k11.metric("Peak notional % eq (test)", f"{float(picked.get('peak_notional_pct_equity_test') or 0.0):.2f}%")
+        k12.metric("Cap hit rate (test)", f"{100.0 * float(picked.get('cap_hit_rate_test') or 0.0):.1f}%")
+
+        k17, k18, k19, k20 = st.columns(4)
+        k17.metric("Exec reject (test)", f"{100.0 * float(picked.get('exec_reject_rate_test') or 0.0):.1f}%")
+        k18.metric("Exec round (test)", f"{100.0 * float(picked.get('exec_round_rate_test') or 0.0):.1f}%")
+        k19.metric("Min qty", f"{float(cfg_info.get('min_qty', 0.0) or 0.0):g}")
+        k20.metric("Min notional", f"{float(cfg_info.get('min_notional', 0.0) or 0.0):g}")
+
+        k5, k6, k7, k8 = st.columns(4)
+        k5.metric("Return (train)", f"{float(picked.get('return_train_pct') or 0.0):.2f}%")
+        k6.metric("Max DD (train)", f"{float(picked.get('dd_train_pct') or 0.0):.2f}%")
+        k7.metric("Sharpe (train)", f"{float(picked.get('sharpe_train') or 0.0):.2f}")
+        k8.metric("Trades (train)", int(picked.get("trades_train") or 0))
+
+        k13, k14, k15, k16 = st.columns(4)
+        k13.metric("Max DD intrabar (train)", f"{float(picked.get('dd_train_intrabar_pct') or 0.0):.2f}%")
+        k14.metric("Liquidated (train)", str(bool(picked.get("liquidated_train") or False)))
+        k15.metric("Peak notional % eq (train)", f"{float(picked.get('peak_notional_pct_equity_train') or 0.0):.2f}%")
+        k16.metric("Cap hit rate (train)", f"{100.0 * float(picked.get('cap_hit_rate_train') or 0.0):.1f}%")
+
+        k21, k22, k23, k24 = st.columns(4)
+        k21.metric("Exec reject (train)", f"{100.0 * float(picked.get('exec_reject_rate_train') or 0.0):.1f}%")
+        k22.metric("Exec round (train)", f"{100.0 * float(picked.get('exec_round_rate_train') or 0.0):.1f}%")
+        k23.metric("Qty step", f"{float(cfg_info.get('qty_step', 0.0) or 0.0):g}")
+        k24.metric("Broker preset", str((st.session_state.get('last_broker_preset') or '')))
+
+        pm_mode_val = str(params.get("pm_mode") or picked.get("pm_mode") or "")
+        if pm_mode_val:
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("PM mode", pm_mode_val)
+            if pm_mode_val == "martingale":
+                p2.metric("Max loss streak (test)", int(picked.get("martingale_max_loss_streak_test") or 0))
+                p3.metric("Max mult used (test)", f"{float(picked.get('martingale_max_multiplier_used_test') or 1.0):.2f}x")
+                p4.metric("Max loss streak (train)", int(picked.get("martingale_max_loss_streak_train") or 0))
+            elif pm_mode_val == "grid":
+                p2.metric("Max adds used (test)", int(picked.get("grid_max_adds_used_test") or 0))
+                p3.metric("Max size mult (test)", f"{float(picked.get('grid_max_multiplier_used_test') or 1.0):.2f}x")
+                p4.metric("Max adds used (train)", int(picked.get("grid_max_adds_used_train") or 0))
+
+    def _render_candidate_analytics(*, analytics_payload: dict) -> None:
+        def _equity_df(ts_ms: list[int], eq: list[float]) -> pd.DataFrame:
+            if not ts_ms or not eq:
+                return pd.DataFrame()
+            n = min(int(len(ts_ms)), int(len(eq)))
+            if n <= 0:
+                return pd.DataFrame()
+            ts = pd.to_datetime(pd.Series(ts_ms[:n]).astype("int64"), unit="ms", utc=True)
+            out = pd.DataFrame({"timestamp": ts.to_numpy(), "equity": pd.Series(eq[:n]).astype("float64").to_numpy()})
+            out = out.set_index("timestamp")
+            out["dd_pct"] = (out["equity"] / out["equity"].cummax().replace(0, 1e-12) - 1.0) * 100.0
+            return out
+
+        def _render_seg(seg_key: str, title: str) -> None:
+            seg = (analytics_payload.get("segments") or {}).get(seg_key) or {}
+            if seg.get("empty"):
+                st.info("Empty segment")
+                return
+            if seg.get("error"):
+                st.error("Analytics error")
+                return
+
+            period_start_ms = seg.get("period_start_ms")
+            period_end_ms = seg.get("period_end_ms")
+
+            ts_ms = seg.get("ts_ms") or []
+            eq = seg.get("equity") or []
+            kpis = seg.get("kpis") or {}
+            overview = seg.get("overview") or {}
+            positions_rows = seg.get("positions") or []
+
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric("Return (period)", f"{float(kpis.get('return_period_pct') or 0.0):.2f}%")
+            r2.metric("Return annualized", f"{float(kpis.get('return_annualized_pct') or 0.0):.2f}%")
+            r3.metric("Max DD (close)", f"{float(kpis.get('max_drawdown_pct') or 0.0):.2f}%")
+            pf = kpis.get("profit_factor")
+            try:
+                pf_f = float(pf)
+            except Exception:
+                pf_f = 0.0
+            r4.metric("Profit factor", "∞" if pf_f == float("inf") else f"{pf_f:.2f}")
+            r5.metric("Sharpe (equity)", f"{float(kpis.get('sharpe_equity') or 0.0):.2f}")
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Max DD (intrabar)", f"{float(kpis.get('max_drawdown_intrabar_pct') or 0.0):.2f}%")
+            s2.metric("Liquidated", str(bool(kpis.get("liquidated") or False)))
+            s3.metric("Peak notional % eq", f"{float(kpis.get('peak_notional_pct_equity') or 0.0):.2f}%")
+            s4.metric("Cap hit rate", f"{100.0 * float(kpis.get('cap_hit_rate') or 0.0):.1f}%")
+
+            s1, s2, s3, s4, s5 = st.columns(5)
+            s1.metric("Positions", int(overview.get("positions", 0) or 0))
+            s2.metric("Taux de réussite", f"{100.0 * float(overview.get('win_rate', 0.0) or 0.0):.1f}%")
+            s3.metric("TP1 hit rate", f"{100.0 * float(overview.get('tp1_hit_rate', 0.0) or 0.0):.1f}%")
+            s4.metric("Avg fills/pos", f"{float(overview.get('avg_fills_per_position', 0.0) or 0.0):.2f}")
+            s5.metric("Period days", f"{float(kpis.get('period_days') or 0.0):.2f}")
+
+            if period_start_ms is not None and period_end_ms is not None:
+                try:
+                    p_start = pd.to_datetime(int(period_start_ms), unit="ms", utc=True)
+                    p_end = pd.to_datetime(int(period_end_ms), unit="ms", utc=True)
+                    p_days = max(0.0, float((p_end - p_start).total_seconds()) / 86400.0)
+                    st.caption(f"Period: {p_start.isoformat()} → {p_end.isoformat()} (days={p_days:.2f})")
+                except Exception:
+                    pass
+
+            t1, t2, t3, t4, t5 = st.columns(5)
+            t1.metric("Median PnL/pos", f"{float(overview.get('median_pnl_per_position', 0.0) or 0.0):.4f}")
+            t2.metric("Avg PnL/pos", f"{float(overview.get('avg_pnl_per_position', 0.0) or 0.0):.4f}")
+            t3.metric("TP1 PnL share", f"{100.0 * float(overview.get('tp1_pnl_share', 0.0) or 0.0):.1f}%")
+            t4.metric("Sharpe (pos PnL)", f"{float(overview.get('sharpe_pnl_per_position', 0.0) or 0.0):.2f}")
+            t5.metric("Candles (downsampled)", int(min(len(ts_ms), len(eq))))
+
+            eq_df = _equity_df(ts_ms, eq)
+            if not eq_df.empty:
+                st.subheader("Equity curve")
+                st.line_chart(eq_df[["equity"]], height=240)
+                st.subheader("Drawdown (%)")
+                st.line_chart(eq_df[["dd_pct"]], height=180)
+
+            with st.expander("Exit reasons (final)", expanded=False):
+                st.json(overview.get("final_exit_reason_dist", {}))
+
+            with st.expander("Positions table", expanded=False):
+                try:
+                    pos_df = pd.DataFrame(positions_rows)
+                except Exception:
+                    pos_df = pd.DataFrame()
+                if not pos_df.empty:
+                    st.dataframe(pos_df, width="stretch", hide_index=True)
+
+        seg_tabs = st.tabs(["Test (post-WF)", "Train (pre-WF)", "Full"])
+        with seg_tabs[0]:
+            _render_seg("test", "Test")
+        with seg_tabs[1]:
+            _render_seg("train", "Train")
+        with seg_tabs[2]:
+            _render_seg("full", "Full")
 
     class _ParamCaptureTrial:
         def __init__(self):
@@ -1983,6 +2185,18 @@ def main() -> None:
                     period_days = None
                     period_label = None
 
+            opt_start = str(data_info.get("optimized_start") or "").strip()
+            opt_end = str(data_info.get("optimized_end") or "").strip()
+            if period_label is None and opt_start and opt_end:
+                period_label = f"{opt_start} → {opt_end}"
+
+            train_start = str(data_info.get("train_start") or "").strip()
+            train_end = str(data_info.get("train_end") or "").strip()
+            test_start = str(data_info.get("test_start") or "").strip()
+            test_end = str(data_info.get("test_end") or "").strip()
+            train_label = f"{train_start} → {train_end}" if (train_start and train_end) else None
+            test_label = f"{test_start} → {test_end}" if (test_start and test_end) else None
+
             c1, c2, c3, c4, c5, c6 = st.columns(6)
             c1.metric("Symbol", str(data_info.get("symbol")))
             c2.metric("Timeframe", str(data_info.get("timeframe")))
@@ -1993,6 +2207,9 @@ def main() -> None:
 
             if period_label:
                 st.caption(f"Optimization period: {period_label}")
+
+            if train_label or test_label:
+                st.caption(f"Train: {train_label or '—'} | Test: {test_label or '—'}")
 
             st.subheader("Méthode d'optimisation")
             pm_mode_used = str(cfg_info.get("pm_mode") or "auto")
@@ -2157,182 +2374,26 @@ def main() -> None:
 
                 params = _candidate_params(picked)
 
-                st.subheader("Inspect candidate")
+                st.subheader("Candidate")
                 st.caption(
                     f"{str(picked.get('strategy'))} | trial {picked.get('trial')} | post#{picked.get('rank_post_wf')} pre#{picked.get('rank_pre_wf')}"
                 )
 
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Return (test)", f"{float(picked.get('return_test_pct') or 0.0):.2f}%")
-                k2.metric("Max DD (test)", f"{float(picked.get('dd_test_pct') or 0.0):.2f}%")
-                k3.metric("Sharpe (test)", f"{float(picked.get('sharpe_test') or 0.0):.2f}")
-                k4.metric("Trades (test)", int(picked.get("trades_test") or 0))
+                tab_overview, tab_analytics, tab_params, tab_json = st.tabs(["Overview", "Analytics", "Params", "JSON"])
+                with tab_overview:
+                    _render_candidate_overview(picked=picked, params=params, cfg_info=cfg_info)
 
-                k9, k10, k11, k12 = st.columns(4)
-                k9.metric("Max DD intrabar (test)", f"{float(picked.get('dd_test_intrabar_pct') or 0.0):.2f}%")
-                k10.metric("Liquidated (test)", str(bool(picked.get("liquidated_test") or False)))
-                k11.metric("Peak notional % eq (test)", f"{float(picked.get('peak_notional_pct_equity_test') or 0.0):.2f}%")
-                k12.metric("Cap hit rate (test)", f"{100.0 * float(picked.get('cap_hit_rate_test') or 0.0):.1f}%")
+                with tab_analytics:
+                    analytics_payload = _load_candidate_analytics(run_dir=run_dir, picked=picked)
+                    if not isinstance(analytics_payload, dict):
+                        st.caption("No precomputed candidate analytics for this run (older run).")
+                    else:
+                        _render_candidate_analytics(analytics_payload=analytics_payload)
 
-                k17, k18, k19, k20 = st.columns(4)
-                k17.metric("Exec reject (test)", f"{100.0 * float(picked.get('exec_reject_rate_test') or 0.0):.1f}%")
-                k18.metric("Exec round (test)", f"{100.0 * float(picked.get('exec_round_rate_test') or 0.0):.1f}%")
-                k19.metric("Min qty", f"{float(cfg_info.get('min_qty', 0.0) or 0.0):g}")
-                k20.metric("Min notional", f"{float(cfg_info.get('min_notional', 0.0) or 0.0):g}")
-
-                k5, k6, k7, k8 = st.columns(4)
-                k5.metric("Return (train)", f"{float(picked.get('return_train_pct') or 0.0):.2f}%")
-                k6.metric("Max DD (train)", f"{float(picked.get('dd_train_pct') or 0.0):.2f}%")
-                k7.metric("Sharpe (train)", f"{float(picked.get('sharpe_train') or 0.0):.2f}")
-                k8.metric("Trades (train)", int(picked.get("trades_train") or 0))
-
-                k13, k14, k15, k16 = st.columns(4)
-                k13.metric("Max DD intrabar (train)", f"{float(picked.get('dd_train_intrabar_pct') or 0.0):.2f}%")
-                k14.metric("Liquidated (train)", str(bool(picked.get("liquidated_train") or False)))
-                k15.metric("Peak notional % eq (train)", f"{float(picked.get('peak_notional_pct_equity_train') or 0.0):.2f}%")
-                k16.metric("Cap hit rate (train)", f"{100.0 * float(picked.get('cap_hit_rate_train') or 0.0):.1f}%")
-
-                k21, k22, k23, k24 = st.columns(4)
-                k21.metric("Exec reject (train)", f"{100.0 * float(picked.get('exec_reject_rate_train') or 0.0):.1f}%")
-                k22.metric("Exec round (train)", f"{100.0 * float(picked.get('exec_round_rate_train') or 0.0):.1f}%")
-                k23.metric("Qty step", f"{float(cfg_info.get('qty_step', 0.0) or 0.0):g}")
-                k24.metric("Broker preset", str((st.session_state.get('last_broker_preset') or '')))
-
-                pm_mode_val = str(params.get("pm_mode") or picked.get("pm_mode") or "")
-                if pm_mode_val:
-                    p1, p2, p3, p4 = st.columns(4)
-                    p1.metric("PM mode", pm_mode_val)
-                    if pm_mode_val == "martingale":
-                        p2.metric("Max loss streak (test)", int(picked.get("martingale_max_loss_streak_test") or 0))
-                        p3.metric("Max mult used (test)", f"{float(picked.get('martingale_max_multiplier_used_test') or 1.0):.2f}x")
-                        p4.metric("Max loss streak (train)", int(picked.get("martingale_max_loss_streak_train") or 0))
-                    elif pm_mode_val == "grid":
-                        p2.metric("Max adds used (test)", int(picked.get("grid_max_adds_used_test") or 0))
-                        p3.metric("Max size mult (test)", f"{float(picked.get('grid_max_multiplier_used_test') or 1.0):.2f}x")
-                        p4.metric("Max adds used (train)", int(picked.get("grid_max_adds_used_train") or 0))
-
-                analytics_dir = run_dir / "candidate_analytics"
-                try:
-                    strat_name = str(picked.get("strategy") or "")
-                    trial_num = int(picked.get("trial") or 0)
-                except Exception:
-                    strat_name = str(picked.get("strategy") or "")
-                    trial_num = 0
-
-                analytics_payload = None
-                if strat_name and analytics_dir.exists():
-                    p = analytics_dir / f"{_safe_name(strat_name)}__trial_{int(trial_num)}.json"
-                    if p.exists():
-                        try:
-                            analytics_payload = json.loads(p.read_text(encoding="utf-8"))
-                        except Exception:
-                            analytics_payload = None
-
-                if not isinstance(analytics_payload, dict):
-                    st.caption("No precomputed candidate analytics for this run (older run).")
-                else:
-                    def _equity_df(ts_ms: list[int], eq: list[float]) -> pd.DataFrame:
-                        if not ts_ms or not eq:
-                            return pd.DataFrame()
-                        n = min(int(len(ts_ms)), int(len(eq)))
-                        if n <= 0:
-                            return pd.DataFrame()
-                        ts = pd.to_datetime(pd.Series(ts_ms[:n]).astype("int64"), unit="ms", utc=True)
-                        out = pd.DataFrame({"timestamp": ts.to_numpy(), "equity": pd.Series(eq[:n]).astype("float64").to_numpy()})
-                        out = out.set_index("timestamp")
-                        out["dd_pct"] = (out["equity"] / out["equity"].cummax().replace(0, 1e-12) - 1.0) * 100.0
-                        return out
-
-                    def _render_seg(seg_key: str, title: str) -> None:
-                        seg = (analytics_payload.get("segments") or {}).get(seg_key) or {}
-                        if seg.get("empty"):
-                            st.info("Empty segment")
-                            return
-                        if seg.get("error"):
-                            st.error("Analytics error")
-                            return
-
-                        period_start_ms = seg.get("period_start_ms")
-                        period_end_ms = seg.get("period_end_ms")
-
-                        ts_ms = seg.get("ts_ms") or []
-                        eq = seg.get("equity") or []
-                        kpis = seg.get("kpis") or {}
-                        overview = seg.get("overview") or {}
-                        positions_rows = seg.get("positions") or []
-
-                        r1, r2, r3, r4, r5 = st.columns(5)
-                        r1.metric("Return (period)", f"{float(kpis.get('return_period_pct') or 0.0):.2f}%")
-                        r2.metric("Return annualized", f"{float(kpis.get('return_annualized_pct') or 0.0):.2f}%")
-                        r3.metric("Max DD (close)", f"{float(kpis.get('max_drawdown_pct') or 0.0):.2f}%")
-                        pf = kpis.get("profit_factor")
-                        try:
-                            pf_f = float(pf)
-                        except Exception:
-                            pf_f = 0.0
-                        r4.metric("Profit factor", "∞" if pf_f == float("inf") else f"{pf_f:.2f}")
-                        r5.metric("Sharpe (equity)", f"{float(kpis.get('sharpe_equity') or 0.0):.2f}")
-
-                        s1, s2, s3, s4 = st.columns(4)
-                        s1.metric("Max DD (intrabar)", f"{float(kpis.get('max_drawdown_intrabar_pct') or 0.0):.2f}%")
-                        s2.metric("Liquidated", str(bool(kpis.get("liquidated") or False)))
-                        s3.metric("Peak notional % eq", f"{float(kpis.get('peak_notional_pct_equity') or 0.0):.2f}%")
-                        s4.metric("Cap hit rate", f"{100.0 * float(kpis.get('cap_hit_rate') or 0.0):.1f}%")
-
-                        s1, s2, s3, s4, s5 = st.columns(5)
-                        s1.metric("Positions", int(overview.get("positions", 0) or 0))
-                        s2.metric("Taux de réussite", f"{100.0 * float(overview.get('win_rate', 0.0) or 0.0):.1f}%")
-                        s3.metric("TP1 hit rate", f"{100.0 * float(overview.get('tp1_hit_rate', 0.0) or 0.0):.1f}%")
-                        s4.metric("Avg fills/pos", f"{float(overview.get('avg_fills_per_position', 0.0) or 0.0):.2f}")
-                        s5.metric("Period days", f"{float(kpis.get('period_days') or 0.0):.2f}")
-
-                        if period_start_ms is not None and period_end_ms is not None:
-                            try:
-                                p_start = pd.to_datetime(int(period_start_ms), unit="ms", utc=True)
-                                p_end = pd.to_datetime(int(period_end_ms), unit="ms", utc=True)
-                                p_days = max(0.0, float((p_end - p_start).total_seconds()) / 86400.0)
-                                st.caption(f"Period: {p_start.isoformat()} → {p_end.isoformat()} (days={p_days:.2f})")
-                            except Exception:
-                                pass
-
-                        t1, t2, t3, t4, t5 = st.columns(5)
-                        t1.metric("Median PnL/pos", f"{float(overview.get('median_pnl_per_position', 0.0) or 0.0):.4f}")
-                        t2.metric("Avg PnL/pos", f"{float(overview.get('avg_pnl_per_position', 0.0) or 0.0):.4f}")
-                        t3.metric("TP1 PnL share", f"{100.0 * float(overview.get('tp1_pnl_share', 0.0) or 0.0):.1f}%")
-                        t4.metric("Sharpe (pos PnL)", f"{float(overview.get('sharpe_pnl_per_position', 0.0) or 0.0):.2f}")
-                        t5.metric("Candles (downsampled)", int(min(len(ts_ms), len(eq))))
-
-                        eq_df = _equity_df(ts_ms, eq)
-                        if not eq_df.empty:
-                            st.subheader("Equity curve")
-                            st.line_chart(eq_df[["equity"]], height=240)
-                            st.subheader("Drawdown (%)")
-                            st.line_chart(eq_df[["dd_pct"]], height=180)
-
-                        with st.expander("Exit reasons (final)", expanded=False):
-                            st.json(overview.get("final_exit_reason_dist", {}))
-
-                        with st.expander("Positions table", expanded=False):
-                            try:
-                                pos_df = pd.DataFrame(positions_rows)
-                            except Exception:
-                                pos_df = pd.DataFrame()
-                            if not pos_df.empty:
-                                st.dataframe(pos_df, width="stretch", hide_index=True)
-
-                    st.subheader("Candidate analytics")
-                    tabs = st.tabs(["Test (post-WF)", "Train (pre-WF)", "Full"])
-                    with tabs[0]:
-                        _render_seg("test", "Test")
-                    with tabs[1]:
-                        _render_seg("train", "Train")
-                    with tabs[2]:
-                        _render_seg("full", "Full")
-
-                with st.expander("Candidate params", expanded=True):
+                with tab_params:
                     st.json(params)
 
-                with st.expander("Candidate JSON", expanded=False):
+                with tab_json:
                     st.json(picked)
 
                 if st.button("Save retained champion (export to vault)", type="primary"):

@@ -1,8 +1,8 @@
 {
-  "state": "building_report",
+  "state": "done",
   "run_dir": "C:\\Users\\Nahel\\Documents\\GitHub\\quantlab\\projects\\ohlcv-optimizer-v1\\runs\\20251217_163929_BTC_5m",
   "started_at": 1765975170.3959029,
-  "updated_at": 1765975792.8811686,
+  "updated_at": 1765976015.440069,
   "storage_url": "sqlite:///C:/Users/Nahel/Documents/GitHub/quantlab/projects/ohlcv-optimizer-v1/runs/20251217_163929_BTC_5m/optuna.db",
   "workers": 8,
   "strategies": [
