@@ -19,6 +19,7 @@ if str(_SRC_DIR) not in sys.path:
 
 import streamlit as st
 import pandas as pd
+import optuna
 from dateutil import parser
 
 try:
@@ -55,6 +56,37 @@ def _parse_date_to_ms(value: str, *, is_end: bool) -> int:
 
 def _ms_to_yyyy_mm_dd(ms: int) -> str:
     return pd.to_datetime(int(ms), unit="ms", utc=True).strftime("%Y-%m-%d")
+
+
+def _count_trials_for_run(*, storage_url: str, study_name_prefix: str) -> int | None:
+    storage_url = str(storage_url or "").strip()
+    prefix = f"{str(study_name_prefix).strip()}."
+    try:
+        summaries = optuna.study.get_all_study_summaries(storage=storage_url)
+    except Exception:
+        return None
+
+    total = 0
+    matched = 0
+    for s in summaries:
+        try:
+            name = str(s.study_name)
+            if name.startswith(prefix) or name == str(study_name_prefix):
+                total += int(s.n_trials or 0)
+                matched += 1
+        except Exception:
+            pass
+
+    if matched > 0:
+        return int(total)
+
+    if storage_url.lower().startswith("sqlite"):
+        try:
+            return int(sum(int(s.n_trials or 0) for s in summaries))
+        except Exception:
+            return None
+
+    return None
 
 
 def _recommend_candidate_settings(*, max_trials: int, n_strats: int, stop_mode: str) -> tuple[str, int]:
@@ -305,7 +337,9 @@ def _build_manifest(
             "initial_equity": cfg.initial_equity,
             "costs": {"fee_bps": cfg.fee_bps, "slippage_bps": cfg.slippage_bps},
             "risk": {
+                "risk_mode": cfg.risk_mode,
                 "risk_pct": cfg.risk_pct,
+                "fixed_notional_pct_equity": cfg.fixed_notional_pct_equity,
                 "max_position_notional_pct_equity": cfg.max_position_notional_pct_equity,
                 "max_leverage": getattr(cfg, "max_leverage", None),
             },
@@ -833,16 +867,37 @@ def main() -> None:
             st.subheader("Backtest")
             initial_equity = float(st.number_input("Initial equity", min_value=10.0, value=10_000.0, step=100.0))
 
-            risk_pct_ui = float(
-                st.number_input(
-                    "Risk per trade (%)",
-                    min_value=0.0,
-                    value=1.0,
-                    step=0.1,
-                    help="Sizing uses risk_pct as a fraction (1.0% => 0.01).",
+            risk_mode_default = str((st.session_state.get("opt_context") or {}).get("risk_mode") or "risk").strip().lower()
+            risk_mode = str(
+                st.selectbox(
+                    "Risk management mode",
+                    options=["risk", "fixed"],
+                    index=(1 if risk_mode_default == "fixed" else 0),
                 )
             )
-            risk_pct = float(risk_pct_ui) / 100.0
+
+            if risk_mode == "fixed":
+                fixed_notional_pct_equity = float(
+                    st.number_input(
+                        "Fixed notional (% equity)",
+                        min_value=0.0,
+                        value=float((st.session_state.get("opt_context") or {}).get("fixed_notional_pct_equity") or 10.0),
+                        step=1.0,
+                    )
+                )
+                risk_pct = 0.0
+            else:
+                fixed_notional_pct_equity = 0.0
+                risk_pct_ui = float(
+                    st.number_input(
+                        "Risk per trade (%)",
+                        min_value=0.0,
+                        value=1.0,
+                        step=0.1,
+                        help="Sizing uses risk_pct as a fraction (1.0% => 0.01).",
+                    )
+                )
+                risk_pct = float(risk_pct_ui) / 100.0
 
             if "max_position_notional_pct_equity_manual" not in st.session_state:
                 try:
@@ -973,6 +1028,64 @@ def main() -> None:
                 )
             )
 
+            st.subheader("Méthode d'optimisation")
+            pm_enabled_default = True
+            try:
+                pm_enabled_default = str((st.session_state.get("opt_context") or {}).get("pm_mode") or "auto").strip().lower() != "none"
+            except Exception:
+                pm_enabled_default = True
+            pm_enabled = bool(
+                st.checkbox(
+                    "Enable position management optimization (grid/martingale)",
+                    value=bool(pm_enabled_default),
+                    help="If enabled, Optuna will choose pm_mode among none/grid/martingale. If disabled, pm_mode is forced to none.",
+                )
+            )
+            pm_mode = "auto" if pm_enabled else "none"
+
+            tp_force_rr = bool(
+                st.checkbox(
+                    "Force TP in RR mode",
+                    value=bool((st.session_state.get("opt_context") or {}).get("tp_mode_policy") in {"rr_fixed", "force_rr", "rr"}),
+                    help="If enabled, TP is always computed as TP = SL * RR, with a fixed RR multiple you choose.",
+                )
+            )
+            tp_rr_fixed = float(
+                st.number_input(
+                    "RR multiple (TP = SL × RR)",
+                    min_value=0.05,
+                    value=float((st.session_state.get("opt_context") or {}).get("tp_rr_fixed") or 2.0),
+                    step=0.1,
+                    disabled=not tp_force_rr,
+                )
+            )
+            tp_mode_policy = "rr_fixed" if tp_force_rr else "auto"
+
+            objective_options = [
+                "win_rate_train",
+                "return_train_pct",
+                "sharpe_train",
+                "median_pnl_per_position_train",
+                "median_pnl_per_position_train_pct",
+                "avg_pnl_per_position_train",
+                "avg_pnl_per_position_train_pct",
+                "sharpe_pnl_per_position_train",
+            ]
+            objective_default = str((st.session_state.get("opt_context") or {}).get("optuna_objective_metric") or "win_rate_train")
+            try:
+                obj_index = objective_options.index(objective_default)
+            except Exception:
+                obj_index = 0
+
+            optuna_objective_metric = str(
+                st.selectbox(
+                    "Optuna objective metric (train)",
+                    options=objective_options,
+                    index=int(obj_index),
+                    help="This metric is optimized on TRAIN during Optuna trials (first objective). Drawdown is still minimized as the second objective.",
+                )
+            )
+
             st.subheader("Ranking")
             candidate_pool = str(
                 st.selectbox(
@@ -999,23 +1112,6 @@ def main() -> None:
                     value=50,
                     step=5,
                     help="Number of candidates kept in the global leaderboard (cross-strategy).",
-                )
-            )
-
-            optuna_objective_metric = str(
-                st.selectbox(
-                    "Optuna objective metric (train)",
-                    options=[
-                        "return_train_pct",
-                        "sharpe_train",
-                        "median_pnl_per_position_train",
-                        "median_pnl_per_position_train_pct",
-                        "avg_pnl_per_position_train",
-                        "avg_pnl_per_position_train_pct",
-                        "sharpe_pnl_per_position_train",
-                    ],
-                    index=0,
-                    help="This metric is optimized on TRAIN during Optuna trials (first objective). Drawdown is still minimized as the second objective.",
                 )
             )
             ranking_metric = str(
@@ -1050,6 +1146,9 @@ def main() -> None:
             optuna_objective_metric = str(
                 (st.session_state.get("opt_context") or {}).get("optuna_objective_metric") or "return_train_pct"
             )
+            pm_mode = str((st.session_state.get("opt_context") or {}).get("pm_mode") or "auto")
+            tp_mode_policy = str((st.session_state.get("opt_context") or {}).get("tp_mode_policy") or "auto")
+            tp_rr_fixed = float((st.session_state.get("opt_context") or {}).get("tp_rr_fixed") or 2.0)
             require_positive_train_metric_for_test = bool(
                 (st.session_state.get("opt_context") or {}).get("require_positive_train_metric_for_test")
                 if (st.session_state.get("opt_context") or {}).get("require_positive_train_metric_for_test") is not None
@@ -1073,7 +1172,9 @@ def main() -> None:
             timeframe=str(cfg_payload.get("timeframe", "5m")),
             pm_mode=str(cfg_payload.get("pm_mode", "auto")),
             strategies=cfg_payload.get("strategies"),
+            risk_mode=str(cfg_payload.get("risk_mode", "risk")),
             risk_pct=float(cfg_payload.get("risk_pct", 0.01)),
+            fixed_notional_pct_equity=float(cfg_payload.get("fixed_notional_pct_equity", 0.0)),
             max_position_notional_pct_equity=float(cfg_payload.get("max_position_notional_pct_equity", 100.0)),
             max_leverage=float(cfg_payload["max_leverage"]) if cfg_payload.get("max_leverage") is not None else None,
             min_qty=float(cfg_payload.get("min_qty", 0.0)),
@@ -1089,6 +1190,9 @@ def main() -> None:
             ranking_metric=str(cfg_payload.get("ranking_metric", "return_test_pct")),
             train_frac=float(cfg_payload.get("train_frac", 0.75)),
             require_positive_train_metric_for_test=bool(cfg_payload.get("require_positive_train_metric_for_test", True)),
+            optuna_objective_metric=str(cfg_payload.get("optuna_objective_metric", "return_train_pct")),
+            tp_mode_policy=str(cfg_payload.get("tp_mode_policy", "auto")),
+            tp_rr_fixed=float(cfg_payload.get("tp_rr_fixed", 2.0)),
         )
 
     def _rebuild_report_from_optuna_db(*, run_dir: Path) -> dict | None:
@@ -1133,7 +1237,7 @@ def main() -> None:
             db_path = run_dir / "optuna.db"
             storage_url = f"sqlite:///{db_path.as_posix()}"
 
-        study_name_prefix = run_dir.name if str(storage_url).strip().lower().startswith("postgres") else None
+        study_name_prefix = run_dir.name
         report = build_report_from_storage(df=df, config=cfg, storage_url=storage_url, study_name_prefix=study_name_prefix)
 
         leaderboard_path = run_dir / "leaderboard.csv"
@@ -1204,6 +1308,7 @@ def main() -> None:
                 ),
                 "broker_custom_overrides": bool(st.session_state.get("broker_custom_overrides") or False),
                 "dd_threshold_pct": cfg.dd_threshold_pct,
+                "optuna_objective_metric": str(getattr(cfg, "optuna_objective_metric", "return_train_pct")),
                 "min_trades_train": cfg.min_trades_train,
                 "min_trades_test": cfg.min_trades_test,
                 "max_trials": cfg.max_trials,
@@ -1212,11 +1317,28 @@ def main() -> None:
                 "timeframe": cfg.timeframe,
                 "pm_mode": cfg.pm_mode,
                 "strategies": cfg.strategies,
+                "risk_mode": str(getattr(cfg, "risk_mode", "risk")),
+                "risk_pct": float(getattr(cfg, "risk_pct", 0.0) or 0.0),
+                "fixed_notional_pct_equity": float(getattr(cfg, "fixed_notional_pct_equity", 0.0) or 0.0),
+                "max_position_notional_pct_equity": float(getattr(cfg, "max_position_notional_pct_equity", 0.0) or 0.0),
+                "max_leverage": getattr(cfg, "max_leverage", None),
+                "min_qty": float(getattr(cfg, "min_qty", 0.0) or 0.0),
+                "qty_step": float(getattr(cfg, "qty_step", 0.0) or 0.0),
+                "min_notional": float(getattr(cfg, "min_notional", 0.0) or 0.0),
+                "broker_profile": str(getattr(cfg, "broker_profile", "perps")),
+                "perps_maintenance_margin_rate": float(getattr(cfg, "perps_maintenance_margin_rate", 0.01) or 0.01),
+                "cfd_initial_margin_rate": float(getattr(cfg, "cfd_initial_margin_rate", 0.01) or 0.01),
+                "cfd_stopout_margin_level": float(getattr(cfg, "cfd_stopout_margin_level", 0.5) or 0.5),
                 "pareto_candidates_max": cfg.pareto_candidates_max,
                 "candidate_pool": cfg.candidate_pool,
                 "global_top_k": cfg.global_top_k,
                 "ranking_metric": cfg.ranking_metric,
                 "train_frac": cfg.train_frac,
+                "require_positive_train_metric_for_test": bool(
+                    getattr(cfg, "require_positive_train_metric_for_test", True)
+                ),
+                "tp_mode_policy": str(getattr(cfg, "tp_mode_policy", "auto") or "auto"),
+                "tp_rr_fixed": float(getattr(cfg, "tp_rr_fixed", 2.0) or 2.0),
                 "multiprocess": True,
                 "workers": None,
             },
@@ -1738,18 +1860,171 @@ def main() -> None:
         if mode == "Analyze":
             st.caption(str(run_dir))
 
+            with st.expander("Maintenance", expanded=False):
+                ctx_exists = bool((run_dir / "context.json").exists())
+                local_db_exists = bool((run_dir / "optuna.db").exists())
+                storage_url_hint = str((report_payload.get("config") or {}).get("storage_url") or "").strip()
+                storage_url_ok = False
+                if storage_url_hint:
+                    u = storage_url_hint.strip().lower()
+                    if u.startswith("postgres"):
+                        storage_url_ok = True
+                    elif u.startswith("sqlite"):
+                        p = storage_url_hint
+                        p_low = p.lower()
+                        if p_low.startswith("sqlite:///"):
+                            p = p[len("sqlite:///"):]
+                        elif p_low.startswith("sqlite://"):
+                            p = p[len("sqlite://"):]
+                        p = str(p).lstrip("/")
+                        try:
+                            storage_url_ok = Path(p).exists()
+                        except Exception:
+                            storage_url_ok = False
+                    else:
+                        storage_url_ok = True
+
+                can_rebuild = bool(ctx_exists and (local_db_exists or storage_url_ok))
+                clean_before_rebuild = bool(
+                    st.checkbox(
+                        "Clean derived artifacts before rebuild",
+                        value=False,
+                        disabled=not can_rebuild,
+                        key=f"an_clean_before_rebuild__{run_dir.name}",
+                    )
+                )
+
+                if not can_rebuild:
+                    if not ctx_exists:
+                        st.warning("Cannot rebuild: missing context.json")
+                    elif storage_url_hint and (not storage_url_ok):
+                        st.warning(f"Cannot rebuild: storage_url points to a missing file: {storage_url_hint}")
+                    else:
+                        st.warning("Cannot rebuild: missing optuna.db and no valid storage_url")
+                else:
+                    if storage_url_hint and (not local_db_exists):
+                        st.caption(f"Using storage_url from report/context: {storage_url_hint}")
+                    if st.button(
+                        "Force rebuild report from optuna.db",
+                        type="primary",
+                        key=f"an_force_rebuild__{run_dir.name}",
+                    ):
+                        if clean_before_rebuild:
+                            derived_files = [
+                                "report.json",
+                                "leaderboard.csv",
+                                "global_leaderboard.csv",
+                                "candidates.csv",
+                                "champion.json",
+                                "open_analyze.url",
+                            ]
+                            for fn in derived_files:
+                                p = run_dir / fn
+                                if p.exists() and p.is_file():
+                                    try:
+                                        p.unlink()
+                                    except Exception:
+                                        pass
+
+                            for p in run_dir.glob("context.*.json"):
+                                if p.is_file() and p.name != "context.json":
+                                    try:
+                                        p.unlink()
+                                    except Exception:
+                                        pass
+
+                            analytics_dir = run_dir / "candidate_analytics"
+                            if analytics_dir.exists() and analytics_dir.is_dir():
+                                try:
+                                    shutil.rmtree(analytics_dir)
+                                except Exception:
+                                    pass
+
+                            logs_dir = run_dir / "logs"
+                            if logs_dir.exists() and logs_dir.is_dir():
+                                try:
+                                    shutil.rmtree(logs_dir)
+                                except Exception:
+                                    pass
+
+                        with st.spinner("Rebuilding report (this can take a while)..."):
+                            rebuilt = _rebuild_report_from_optuna_db(run_dir=run_dir)
+                        if isinstance(rebuilt, dict):
+                            st.success("Rebuild done. Reloading...")
+                            st.rerun()
+                        else:
+                            st.error("Rebuild failed")
+
             data_info = report_payload.get("data") or {}
             cfg_info = report_payload.get("config") or {}
 
-            c1, c2, c3, c4 = st.columns(4)
+            storage_url = str(cfg_info.get("storage_url") or "").strip()
+            if not storage_url:
+                db_path = run_dir / "optuna.db"
+                storage_url = f"sqlite:///{db_path.as_posix()}"
+
+            trials_total = _count_trials_for_run(storage_url=storage_url, study_name_prefix=run_dir.name)
+
+            start_ms = data_info.get("start_ms")
+            end_ms = data_info.get("end_ms")
+            period_days = None
+            period_label = None
+            if start_ms is not None and end_ms is not None:
+                try:
+                    start_dt = pd.to_datetime(int(start_ms), unit="ms", utc=True)
+                    end_dt = pd.to_datetime(int(end_ms), unit="ms", utc=True)
+                    days = max(0.0, float((end_dt - start_dt).total_seconds()) / 86400.0)
+                    period_days = days
+                    end_disp = end_dt
+                    if end_dt == end_dt.normalize() and end_dt > start_dt:
+                        end_disp = end_dt - pd.Timedelta(milliseconds=1)
+                    period_label = f"{start_dt.strftime('%Y-%m-%d')} → {end_disp.strftime('%Y-%m-%d')}"
+                except Exception:
+                    period_days = None
+                    period_label = None
+
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
             c1.metric("Symbol", str(data_info.get("symbol")))
             c2.metric("Timeframe", str(data_info.get("timeframe")))
-            c3.metric("Candles", int(data_info.get("candles_total", 0) or 0))
-            c4.metric("Saved at", str(report_payload.get("saved_at")))
+            c3.metric("Trials", "—" if trials_total is None else int(trials_total))
+            c4.metric("Candles", int(data_info.get("candles_total", 0) or 0))
+            c5.metric("Days", "—" if period_days is None else f"{float(period_days):.2f}")
+            c6.metric("Saved at", str(report_payload.get("saved_at")))
+
+            if period_label:
+                st.caption(f"Optimization period: {period_label}")
+
+            st.subheader("Méthode d'optimisation")
+            pm_mode_used = str(cfg_info.get("pm_mode") or "auto")
+            pm_enabled_used = str(pm_mode_used).strip().lower() != "none"
+            tp_mode_policy_used = str(cfg_info.get("tp_mode_policy") or "auto").strip().lower()
+            rr_forced_used = tp_mode_policy_used in {"rr_fixed", "force_rr", "rr"}
+            rr_value_used = None
+            try:
+                rr_value_used = float(cfg_info.get("tp_rr_fixed") or 2.0)
+            except Exception:
+                rr_value_used = None
+
+            objective_used = str(cfg_info.get("optuna_objective_metric") or "return_train_pct")
+            require_positive_used = bool(
+                cfg_info.get("require_positive_train_metric_for_test")
+                if cfg_info.get("require_positive_train_metric_for_test") is not None
+                else True
+            )
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Objective", objective_used)
+            m2.metric("PM", "ON" if pm_enabled_used else "OFF")
+            m3.metric("pm_mode", pm_mode_used)
+            m4.metric("Force RR", "ON" if rr_forced_used else "OFF")
+            m5.metric("RR", "—" if (not rr_forced_used or rr_value_used is None) else f"{float(rr_value_used):g}")
+
+            st.caption(
+                "Require positive train metric for test: "
+                + ("ON" if bool(require_positive_used) else "OFF")
+            )
 
             with st.expander("Report config", expanded=False):
-                start_ms = data_info.get("start_ms")
-                end_ms = data_info.get("end_ms")
                 if start_ms is not None and end_ms is not None:
                     try:
                         start_dt = pd.to_datetime(int(start_ms), unit="ms", utc=True)
@@ -1902,8 +2177,8 @@ def main() -> None:
                 k17, k18, k19, k20 = st.columns(4)
                 k17.metric("Exec reject (test)", f"{100.0 * float(picked.get('exec_reject_rate_test') or 0.0):.1f}%")
                 k18.metric("Exec round (test)", f"{100.0 * float(picked.get('exec_round_rate_test') or 0.0):.1f}%")
-                k19.metric("Min qty", f"{float(getattr(cfg, 'min_qty', 0.0) or 0.0):g}")
-                k20.metric("Min notional", f"{float(getattr(cfg, 'min_notional', 0.0) or 0.0):g}")
+                k19.metric("Min qty", f"{float(cfg_info.get('min_qty', 0.0) or 0.0):g}")
+                k20.metric("Min notional", f"{float(cfg_info.get('min_notional', 0.0) or 0.0):g}")
 
                 k5, k6, k7, k8 = st.columns(4)
                 k5.metric("Return (train)", f"{float(picked.get('return_train_pct') or 0.0):.2f}%")
@@ -1920,7 +2195,7 @@ def main() -> None:
                 k21, k22, k23, k24 = st.columns(4)
                 k21.metric("Exec reject (train)", f"{100.0 * float(picked.get('exec_reject_rate_train') or 0.0):.1f}%")
                 k22.metric("Exec round (train)", f"{100.0 * float(picked.get('exec_round_rate_train') or 0.0):.1f}%")
-                k23.metric("Qty step", f"{float(getattr(cfg, 'qty_step', 0.0) or 0.0):g}")
+                k23.metric("Qty step", f"{float(cfg_info.get('qty_step', 0.0) or 0.0):g}")
                 k24.metric("Broker preset", str((st.session_state.get('last_broker_preset') or '')))
 
                 pm_mode_val = str(params.get("pm_mode") or picked.get("pm_mode") or "")
@@ -2253,9 +2528,11 @@ def main() -> None:
                 time_budget_seconds=int(time_budget_minutes * 60) if time_budget_minutes > 0 else None,
                 n_jobs=1,
                 timeframe=timeframe,
-                pm_mode="auto",
+                pm_mode=str(pm_mode),
                 strategies=selected if selected else None,
+                risk_mode=str(risk_mode),
                 risk_pct=float(risk_pct),
+                fixed_notional_pct_equity=float(fixed_notional_pct_equity),
                 max_position_notional_pct_equity=float(max_position_notional_pct_equity),
                 max_leverage=max_leverage,
                 min_qty=float(min_qty),
@@ -2267,6 +2544,9 @@ def main() -> None:
                 global_top_k=int(global_top_k),
                 ranking_metric=str(ranking_metric),
                 require_positive_train_metric_for_test=bool(require_positive_train_metric_for_test),
+                optuna_objective_metric=str(optuna_objective_metric),
+                tp_mode_policy=str(tp_mode_policy),
+                tp_rr_fixed=float(tp_rr_fixed),
                 broker_profile=str(broker_profile_cfg),
                 perps_maintenance_margin_rate=float(perps_maintenance_margin_rate),
                 cfd_initial_margin_rate=float(cfd_initial_margin_rate),
@@ -2276,6 +2556,14 @@ def main() -> None:
             run_id = time.strftime("%Y%m%d_%H%M%S")
             run_dir = _PROJECT_ROOT / "runs" / f"{run_id}_{symbol_display}_{timeframe}"
             run_dir.mkdir(parents=True, exist_ok=True)
+
+            storage_url_ctx = str(storage_url_ui or "").strip()
+            try:
+                u = storage_url_ctx.lower()
+            except Exception:
+                u = ""
+            if u.startswith("sqlite"):
+                storage_url_ctx = ""
 
             ctx_payload = {
                 "data_root": str(data_root),
@@ -2330,7 +2618,7 @@ def main() -> None:
                             "dd_threshold_pct": cfg.dd_threshold_pct,
                             "broker_preset": str(broker_preset),
                             "broker_custom_overrides": bool(st.session_state.get("broker_custom_overrides") or False),
-                            "storage_url": str(storage_url_ui),
+                            "storage_url": str(storage_url_ctx),
                             "optuna_objective_metric": str(optuna_objective_metric),
                             "require_positive_train_metric_for_test": bool(require_positive_train_metric_for_test),
                             "min_trades_train": cfg.min_trades_train,
@@ -2342,7 +2630,9 @@ def main() -> None:
                             "timeframe": cfg.timeframe,
                             "pm_mode": cfg.pm_mode,
                             "strategies": cfg.strategies,
+                            "risk_mode": cfg.risk_mode,
                             "risk_pct": cfg.risk_pct,
+                            "fixed_notional_pct_equity": cfg.fixed_notional_pct_equity,
                             "max_position_notional_pct_equity": cfg.max_position_notional_pct_equity,
                             "max_leverage": getattr(cfg, "max_leverage", None),
                             "min_qty": float(getattr(cfg, "min_qty", 0.0) or 0.0),
@@ -2357,6 +2647,8 @@ def main() -> None:
                             "global_top_k": cfg.global_top_k,
                             "ranking_metric": cfg.ranking_metric,
                             "train_frac": cfg.train_frac,
+                            "tp_mode_policy": str(getattr(cfg, "tp_mode_policy", "auto") or "auto"),
+                            "tp_rr_fixed": float(getattr(cfg, "tp_rr_fixed", 2.0) or 2.0),
                         },
                         "run_id": str(run_id),
                     },

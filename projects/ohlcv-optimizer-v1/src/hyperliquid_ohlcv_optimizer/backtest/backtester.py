@@ -154,6 +154,134 @@ def run_backtest(*, df: pd.DataFrame, signal: pd.Series, config: BacktestConfig)
 
         return float(out)
 
+    position_id = 0
+    entry_ts: int | None = None
+    tp_price = np.nan
+    sl_price = np.nan
+
+    entry_qty0 = 0.0
+    peak_qty = 0.0
+
+    global_peak_qty_mult = 0.0
+    peak_notional = 0.0
+    peak_notional_pct_equity = 0.0
+
+    liquidated = False
+    liquidation_ts: int | None = None
+
+    equity_curve: list[float] = []
+    equity_worst_curve: list[float] = []
+    trades_rows: list[dict] = []
+
+    tp1_filled = False
+    tp_trail_extreme = np.nan
+    position_realized_pnl = 0.0
+
+    atr_ref = np.nan
+
+    def mark_to_market(price: float) -> float:
+        if direction == 0 or qty <= 0:
+            return float(cash)
+        pnl_u = float(qty) * (float(price) - float(avg_entry)) * float(direction)
+        return float(cash) + float(pnl_u)
+
+    def worst_mtm(high: float, low: float) -> float:
+        if direction == 0 or qty <= 0:
+            return float(cash)
+        adverse_price = float(low) if direction > 0 else float(high)
+        return float(mark_to_market(adverse_price))
+
+    def recalc_tp_sl() -> None:
+        nonlocal tp_price, sl_price
+
+        if direction == 0 or qty <= 0 or (not np.isfinite(float(avg_entry))):
+            tp_price = np.nan
+            sl_price = np.nan
+            return
+
+        sl_type = str(config.common.sl_type)
+        sl_dist: float | None
+        if sl_type == "atr":
+            if not np.isfinite(float(atr_ref)):
+                sl_dist = None
+            else:
+                sl_dist = float(config.common.sl_atr_mult) * float(atr_ref)
+        else:
+            sl_dist = float(avg_entry) * (float(config.common.sl_pct) / 100.0)
+
+        if sl_dist is None or (not np.isfinite(float(sl_dist))) or float(sl_dist) <= 0:
+            tp_price = np.nan
+            sl_price = np.nan
+            return
+
+        if direction > 0:
+            sl_price = float(avg_entry) - float(sl_dist)
+        else:
+            sl_price = float(avg_entry) + float(sl_dist)
+
+        tp_mode = str(config.common.tp_mode)
+        if tp_mode == "rr":
+            tp_dist = float(sl_dist) * float(config.common.tp_rr)
+        else:
+            tp_dist = float(avg_entry) * (float(config.common.tp_pct) / 100.0)
+
+        if (not np.isfinite(float(tp_dist))) or float(tp_dist) <= 0:
+            tp_price = np.nan
+            return
+
+        if direction > 0:
+            tp_price = float(avg_entry) + float(tp_dist)
+        else:
+            tp_price = float(avg_entry) - float(tp_dist)
+
+    def _pm_telemetry() -> dict:
+        try:
+            return {
+                "pm_mode": str(getattr(config.pm, "mode", "none")),
+                "grid_adds_done": int(pm.grid_adds_done()),
+            }
+        except Exception:
+            return {}
+
+    def _update_exposure_metrics(*, price: float, eq_ref: float) -> None:
+        nonlocal peak_notional, peak_notional_pct_equity, global_peak_qty_mult, peak_qty
+        if direction == 0 or qty <= 0:
+            return
+        notional = abs(float(qty)) * float(price)
+        if np.isfinite(float(notional)):
+            peak_notional = float(max(float(peak_notional), float(notional)))
+            if np.isfinite(float(eq_ref)) and float(eq_ref) > 0:
+                peak_notional_pct_equity = float(
+                    max(float(peak_notional_pct_equity), (float(notional) / float(eq_ref)) * 100.0)
+                )
+
+        peak_qty = float(max(float(peak_qty), float(qty)))
+        if float(entry_qty0) > 0:
+            qm = float(qty) / float(entry_qty0)
+            if np.isfinite(float(qm)):
+                global_peak_qty_mult = float(max(float(global_peak_qty_mult), abs(float(qm))))
+
+    def _should_liquidate(*, eq_worst: float, price: float) -> bool:
+        if direction == 0 or qty <= 0:
+            return False
+        notional = abs(float(qty)) * float(price)
+        if (not np.isfinite(float(notional))) or float(notional) <= 0:
+            return False
+
+        prof = str(getattr(config.broker, "profile", "perps") or "perps").strip().lower()
+        if prof == "cfd":
+            used_margin = float(getattr(config.broker, "cfd_initial_margin_rate", 0.01) or 0.01) * float(notional)
+            if used_margin <= 0:
+                return False
+            ml = float(eq_worst) / float(used_margin)
+            return float(ml) <= float(getattr(config.broker, "cfd_stopout_margin_level", 0.5) or 0.5)
+
+        if prof == "spot":
+            return float(eq_worst) <= 0.0
+
+        mmr = float(getattr(config.broker, "perps_maintenance_margin_rate", 0.01) or 0.01)
+        return float(eq_worst) <= float(mmr) * float(notional)
+
     for i in range(len(df)):
         row = df.iloc[i]
         ts = int(row["timestamp_ms"])

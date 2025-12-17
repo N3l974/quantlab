@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 
+from market_data_downloader.core.timeframes import timeframe_to_ms
 from market_data_downloader.sources.base import SourceAdapter
 from market_data_downloader.storage.ohlcv_store import (
     OhlcvLocation,
@@ -50,6 +52,10 @@ def download_ohlcv(
 ) -> DownloadSummary:
     if start_ms >= end_ms:
         raise ValueError("start must be < end")
+
+    now_ms = int(time.time() * 1000)
+    if end_ms > now_ms:
+        end_ms = now_ms
 
     loc = OhlcvLocation(source=adapter.name, symbol=symbol, timeframe=timeframe)
 
@@ -131,14 +137,58 @@ def download_ohlcv(
             continue
 
         new_parts: list[pd.DataFrame] = []
+        tf_ms = timeframe_to_ms(timeframe)
+        max_candles = adapter.ohlcv_max_candles_per_request(symbol=symbol, timeframe=timeframe)
+        available_from_ms, _ = adapter.ohlcv_available_from_ms(symbol=symbol, timeframe=timeframe)
+
+        def _align_down(ts_ms: int) -> int:
+            return (ts_ms // tf_ms) * tf_ms
+
+        def _iter_windows(r_start: int, r_end: int) -> list[tuple[int, int]]:
+            if max_candles is None:
+                return [(r_start, r_end)]
+
+            step_ms = int(max_candles) * tf_ms
+            if step_ms <= 0:
+                return [(r_start, r_end)]
+
+            windows: list[tuple[int, int]] = []
+            cur = int(r_start)
+            while cur < r_end:
+                nxt = min(int(r_end), cur + step_ms)
+                windows.append((cur, int(nxt)))
+                cur = int(nxt)
+            return windows
+
         for r_start, r_end in missing_ranges:
-            logger.info("Downloading %s %s %s %s..%s", adapter.name, symbol, timeframe, r_start, r_end)
-            df_part = adapter.fetch_ohlcv(symbol=symbol, timeframe=timeframe, start_ms=r_start, end_ms=r_end)
-            if df_part is None or df_part.empty:
+            rr_start = int(r_start)
+            rr_end = int(r_end)
+
+            if available_from_ms is not None:
+                rr_start = max(rr_start, int(available_from_ms))
+            rr_end = min(rr_end, _align_down(now_ms + tf_ms))
+            if rr_start >= rr_end:
                 continue
-            new_parts.append(df_part)
+
+            for w_start, w_end in _iter_windows(rr_start, rr_end):
+                logger.info("Downloading %s %s %s %s..%s", adapter.name, symbol, timeframe, w_start, w_end)
+                df_part = adapter.fetch_ohlcv(symbol=symbol, timeframe=timeframe, start_ms=w_start, end_ms=w_end)
+                if df_part is None or df_part.empty:
+                    continue
+
+                df_part = df_part[(df_part["timestamp_ms"] >= w_start) & (df_part["timestamp_ms"] < w_end)]
+                if df_part.empty:
+                    continue
+
+                new_parts.append(df_part)
 
         if not new_parts:
+            try:
+                df_existing = _read_existing_df(existing_df_path)
+                candles_total += int(df_existing.shape[0])
+            except Exception:
+                pass
+
             done_jobs += 1
             if progress is not None:
                 progress(done_jobs, total_jobs, f"No new data for {year:04d}-{month:02d}")

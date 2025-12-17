@@ -22,3 +22,6 @@ class SourceAdapter(ABC):
 
     def ohlcv_available_from_ms(self, symbol: str, timeframe: str) -> tuple[int | None, bool]:
         return (None, False)
+
+    def ohlcv_max_candles_per_request(self, symbol: str, timeframe: str) -> int | None:
+        return None

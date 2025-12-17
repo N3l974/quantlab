@@ -65,7 +65,9 @@ def main() -> None:
         timeframe=str(ctx["config"].get("timeframe", "5m")),
         pm_mode=str(ctx["config"].get("pm_mode", "auto")),
         strategies=[str(args.strategy)],
+        risk_mode=str(ctx["config"].get("risk_mode", "risk")),
         risk_pct=float(ctx["config"].get("risk_pct", 0.01)),
+        fixed_notional_pct_equity=float(ctx["config"].get("fixed_notional_pct_equity", 0.0)),
         max_position_notional_pct_equity=float(ctx["config"].get("max_position_notional_pct_equity", 100.0)),
         max_leverage=float(ctx["config"]["max_leverage"]) if ctx["config"].get("max_leverage") is not None else None,
         min_qty=float(ctx["config"].get("min_qty", 0.0)),
@@ -81,6 +83,8 @@ def main() -> None:
         ranking_metric=str(ctx["config"].get("ranking_metric", "median_pnl_per_position_test")),
         train_frac=float(ctx["config"].get("train_frac", 0.75)),
         optuna_objective_metric=str(ctx["config"].get("optuna_objective_metric", "return_train_pct")),
+        tp_mode_policy=str(ctx["config"].get("tp_mode_policy", "auto")),
+        tp_rr_fixed=float(ctx["config"].get("tp_rr_fixed", 2.0)),
     )
 
     df = _load_filtered_df(
@@ -162,6 +166,12 @@ def main() -> None:
                 v = float(ov.get("avg_pnl_per_position", 0.0))
             elif metric == "sharpe_pnl_per_position_train":
                 v = float(ov.get("sharpe_pnl_per_position", 0.0))
+            elif metric == "win_rate_train":
+                positions = int(ov.get("positions", 0) or 0)
+                min_trades_train = int(getattr(base, "min_trades_train", 0) or 0)
+                if min_trades_train > 0 and positions < min_trades_train:
+                    raise optuna.TrialPruned()
+                v = float(ov.get("win_rate", 0.0))
             elif metric == "median_pnl_per_position_train_pct":
                 v0 = float(ov.get("median_pnl_per_position", 0.0))
                 v = (v0 / max(float(base.initial_equity), 1e-12)) * 100.0

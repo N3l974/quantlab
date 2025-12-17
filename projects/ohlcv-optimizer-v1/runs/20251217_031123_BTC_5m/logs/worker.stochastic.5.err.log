@@ -1,0 +1,39 @@
+[W 2025-12-17 03:11:29,836] Trial 6 failed with parameters: {'stoch_k_period': 9, 'stoch_d_period': 15, 'stoch_oversold': 26.862039005033186, 'stoch_overbought': 75.54403417678104, 'tp_mode': 'rr', 'tp_rr': 6.526506174181267, 'tp_mgmt': 'partial_trailing', 'tp1_close_frac': 0.2973195054197135, 'tp_trail_pct': 1.3171625349249136, 'sl_type': 'atr', 'sl_trailing': True, 'exit_on_flat': False, 'sl_atr_period': 56, 'sl_atr_mult': 1.9900644185612348, 'pm_mode': 'grid', 'grid_max_adds': 6, 'grid_spacing_pct': 0.06545196931176273, 'grid_size_multiplier': 2.7135812157287305} because of the following error: NameError("name 'mark_to_market' is not defined").
+Traceback (most recent call last):
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 205, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 146, in objective
+    res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\backtest\backtester.py", line 663, in run_backtest
+    eq_close = float(mark_to_market(c))
+                     ^^^^^^^^^^^^^^
+NameError: name 'mark_to_market' is not defined
+[W 2025-12-17 03:11:29,836] Trial 6 failed with value None.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 191, in <module>
+    main()
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 178, in main
+    study.optimize(
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\study.py", line 490, in optimize
+    _optimize(
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 67, in _optimize
+    _optimize_sequential(
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 164, in _optimize_sequential
+    frozen_trial_id = _run_trial(study, func, catch)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 262, in _run_trial
+    raise func_err
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\.venv\Lib\site-packages\optuna\study\_optimize.py", line 205, in _run_trial
+    value_or_values = func(trial)
+                      ^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\optimize\optuna_worker.py", line 146, in objective
+    res = run_backtest(df=df_train, signal=sig_train, config=bt_cfg)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Nahel\Documents\GitHub\quantlab\projects\ohlcv-optimizer-v1\src\hyperliquid_ohlcv_optimizer\backtest\backtester.py", line 663, in run_backtest
+    eq_close = float(mark_to_market(c))
+                     ^^^^^^^^^^^^^^
+NameError: name 'mark_to_market' is not defined

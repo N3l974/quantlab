@@ -1,0 +1,30 @@
+{"t": 1765975170.3969114, "event": "strategy_start", "strategy": "ma_cross"}
+{"t": 1765975174.541813, "event": "best_update", "strategy": "ma_cross", "trial": 4, "train_objective_metric": "win_rate_train", "train_objective": 0.2803410230692076, "train_dd": 11.99554771394145}
+{"t": 1765975185.097007, "event": "best_update", "strategy": "ma_cross", "trial": 19, "train_objective_metric": "win_rate_train", "train_objective": 0.2527147087857848, "train_dd": 7.325621630164422}
+{"t": 1765975210.669236, "event": "best_update", "strategy": "ma_cross", "trial": 67, "train_objective_metric": "win_rate_train", "train_objective": 0.2702702702702703, "train_dd": 5.4545253022017555}
+{"t": 1765975227.747373, "event": "best_update", "strategy": "ma_cross", "trial": 97, "train_objective_metric": "win_rate_train", "train_objective": 0.28507462686567164, "train_dd": 3.9531403919763757}
+{"t": 1765975342.1429706, "event": "strategy_end", "strategy": "ma_cross"}
+{"t": 1765975342.1429706, "event": "strategy_start", "strategy": "rsi_reversion"}
+{"t": 1765975346.3454363, "event": "best_update", "strategy": "rsi_reversion", "trial": 2, "train_objective_metric": "win_rate_train", "train_objective": 0.6, "train_dd": 0.4564198273835973}
+{"t": 1765975378.1729524, "event": "best_update", "strategy": "rsi_reversion", "trial": 86, "train_objective_metric": "win_rate_train", "train_objective": 1.0, "train_dd": 0.048825517637178566}
+{"t": 1765975408.1561513, "event": "best_update", "strategy": "rsi_reversion", "trial": 167, "train_objective_metric": "win_rate_train", "train_objective": 1.0, "train_dd": 0.022274013367205043}
+{"t": 1765975414.532434, "event": "best_update", "strategy": "rsi_reversion", "trial": 183, "train_objective_metric": "win_rate_train", "train_objective": 1.0, "train_dd": 0.019092011457614716}
+{"t": 1765975425.1685243, "event": "best_update", "strategy": "rsi_reversion", "trial": 207, "train_objective_metric": "win_rate_train", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765975455.9169972, "event": "strategy_end", "strategy": "rsi_reversion"}
+{"t": 1765975455.9185038, "event": "strategy_start", "strategy": "bollinger_breakout"}
+{"t": 1765975460.1779387, "event": "best_update", "strategy": "bollinger_breakout", "trial": 3, "train_objective_metric": "win_rate_train", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765975564.0696955, "event": "strategy_end", "strategy": "bollinger_breakout"}
+{"t": 1765975564.0707169, "event": "strategy_start", "strategy": "range_breakout"}
+{"t": 1765975568.240758, "event": "best_update", "strategy": "range_breakout", "trial": 6, "train_objective_metric": "win_rate_train", "train_objective": 0.4149443561208267, "train_dd": 18.080227587483638}
+{"t": 1765975574.658278, "event": "best_update", "strategy": "range_breakout", "trial": 20, "train_objective_metric": "win_rate_train", "train_objective": 0.40463917525773196, "train_dd": 7.643951966753165}
+{"t": 1765975578.9403408, "event": "best_update", "strategy": "range_breakout", "trial": 29, "train_objective_metric": "win_rate_train", "train_objective": 0.3877551020408163, "train_dd": 7.085984204356713}
+{"t": 1765975583.1685092, "event": "best_update", "strategy": "range_breakout", "trial": 39, "train_objective_metric": "win_rate_train", "train_objective": 0.369281045751634, "train_dd": 4.922874599726521}
+{"t": 1765975611.1094189, "event": "best_update", "strategy": "range_breakout", "trial": 114, "train_objective_metric": "win_rate_train", "train_objective": 0.3619631901840491, "train_dd": 4.398734280556747}
+{"t": 1765975675.1951199, "event": "strategy_end", "strategy": "range_breakout"}
+{"t": 1765975675.196144, "event": "strategy_start", "strategy": "stochastic"}
+{"t": 1765975679.3839686, "event": "best_update", "strategy": "stochastic", "trial": 3, "train_objective_metric": "win_rate_train", "train_objective": 0.48220064724919093, "train_dd": 6.173048427617942}
+{"t": 1765975692.073609, "event": "best_update", "strategy": "stochastic", "trial": 37, "train_objective_metric": "win_rate_train", "train_objective": 0.5, "train_dd": 3.6131368166332902}
+{"t": 1765975698.3429112, "event": "best_update", "strategy": "stochastic", "trial": 58, "train_objective_metric": "win_rate_train", "train_objective": 0.5277777777777778, "train_dd": 0.89326420529084}
+{"t": 1765975733.0550106, "event": "best_update", "strategy": "stochastic", "trial": 149, "train_objective_metric": "win_rate_train", "train_objective": 0.5, "train_dd": 0.558694332054547}
+{"t": 1765975776.95456, "event": "best_update", "strategy": "stochastic", "trial": 261, "train_objective_metric": "win_rate_train", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765975792.8811686, "event": "strategy_end", "strategy": "stochastic"}

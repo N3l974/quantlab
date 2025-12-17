@@ -1,0 +1,22 @@
+{"t": 1765969519.5030675, "event": "strategy_start", "strategy": "ma_cross"}
+{"t": 1765969521.5638318, "event": "best_update", "strategy": "ma_cross", "trial": 12, "train_objective_metric": "return_train_pct", "train_objective": 0.7940451252386183, "train_dd": 0.6821178395547364}
+{"t": 1765969523.63079, "event": "best_update", "strategy": "ma_cross", "trial": 77, "train_objective_metric": "return_train_pct", "train_objective": 1.047316860091807, "train_dd": 0.3884032838645538}
+{"t": 1765969527.8292196, "event": "best_update", "strategy": "ma_cross", "trial": 171, "train_objective_metric": "return_train_pct", "train_objective": 0.7232437280479731, "train_dd": 0.35039730368339983}
+{"t": 1765969531.7503207, "event": "strategy_end", "strategy": "ma_cross"}
+{"t": 1765969531.7523305, "event": "strategy_start", "strategy": "rsi_reversion"}
+{"t": 1765969533.838317, "event": "best_update", "strategy": "rsi_reversion", "trial": 24, "train_objective_metric": "return_train_pct", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765969544.016053, "event": "strategy_end", "strategy": "rsi_reversion"}
+{"t": 1765969544.016053, "event": "strategy_start", "strategy": "bollinger_breakout"}
+{"t": 1765969546.08537, "event": "best_update", "strategy": "bollinger_breakout", "trial": 1, "train_objective_metric": "return_train_pct", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765969556.0778456, "event": "strategy_end", "strategy": "bollinger_breakout"}
+{"t": 1765969556.0798519, "event": "strategy_start", "strategy": "range_breakout"}
+{"t": 1765969558.1421354, "event": "best_update", "strategy": "range_breakout", "trial": 24, "train_objective_metric": "return_train_pct", "train_objective": -0.24530679204736172, "train_dd": 0.3675268952457625}
+{"t": 1765969560.2137852, "event": "best_update", "strategy": "range_breakout", "trial": 78, "train_objective_metric": "return_train_pct", "train_objective": -0.27633304249320423, "train_dd": 0.28545235989877255}
+{"t": 1765969566.5163434, "event": "best_update", "strategy": "range_breakout", "trial": 266, "train_objective_metric": "return_train_pct", "train_objective": -0.2096274659996178, "train_dd": 0.2737000638900281}
+{"t": 1765969568.1226466, "event": "strategy_end", "strategy": "range_breakout"}
+{"t": 1765969568.1236517, "event": "strategy_start", "strategy": "stochastic"}
+{"t": 1765969570.2422884, "event": "best_update", "strategy": "stochastic", "trial": 0, "train_objective_metric": "return_train_pct", "train_objective": -1.5608833968673186, "train_dd": 1.785159117841922}
+{"t": 1765969572.2945244, "event": "best_update", "strategy": "stochastic", "trial": 64, "train_objective_metric": "return_train_pct", "train_objective": -0.12017082743875918, "train_dd": 0.12847931818972938}
+{"t": 1765969574.389513, "event": "best_update", "strategy": "stochastic", "trial": 83, "train_objective_metric": "return_train_pct", "train_objective": -0.1211156415859671, "train_dd": 0.12111564158596594}
+{"t": 1765969576.5005412, "event": "best_update", "strategy": "stochastic", "trial": 172, "train_objective_metric": "return_train_pct", "train_objective": 0.0, "train_dd": 0.0}
+{"t": 1765969581.7999437, "event": "strategy_end", "strategy": "stochastic"}

@@ -41,7 +41,7 @@ class OptimizationConfig:
     timeframe: str = "5m"
     pm_mode: str = "auto"  # auto|none|grid|martingale
     strategies: list[str] | None = None
-    risk_mode: str = "risk"  # risk|fixed
+    risk_mode: str = "risk"
     risk_pct: float = 0.01
     fixed_notional_pct_equity: float = 0.0
     max_position_notional_pct_equity: float = 100.0
@@ -60,6 +60,8 @@ class OptimizationConfig:
     train_frac: float = 0.75
     optuna_objective_metric: str = "return_train_pct"
     require_positive_train_metric_for_test: bool = True
+    tp_mode_policy: str = "auto"
+    tp_rr_fixed: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -577,13 +579,21 @@ def _train_test_split(df: pd.DataFrame, train_frac: float = 0.75) -> tuple[pd.Da
 
 
 def _build_backtest_config(*, trial: optuna.Trial, base: OptimizationConfig) -> BacktestConfig:
-    tp_mode = str(trial.suggest_categorical("tp_mode", ["pct", "rr"]))
+    tp_mode_policy = str(getattr(base, "tp_mode_policy", "auto") or "auto").strip().lower()
     tp_pct = 1.0
     tp_rr = 2.0
-    if tp_mode == "pct":
-        tp_pct = float(trial.suggest_float("tp_pct", 0.1, 10.0))
+    if tp_mode_policy in {"rr_fixed", "force_rr", "rr"}:
+        rr_fixed = float(getattr(base, "tp_rr_fixed", 2.0) or 2.0)
+        if (not np.isfinite(float(rr_fixed))) or float(rr_fixed) <= 0:
+            rr_fixed = 2.0
+        tp_mode = str(trial.suggest_categorical("tp_mode", ["rr"]))
+        tp_rr = float(trial.suggest_categorical("tp_rr", [float(rr_fixed)]))
     else:
-        tp_rr = float(trial.suggest_float("tp_rr", 0.2, 10.0))
+        tp_mode = str(trial.suggest_categorical("tp_mode", ["pct", "rr"]))
+        if tp_mode == "pct":
+            tp_pct = float(trial.suggest_float("tp_pct", 0.1, 10.0))
+        else:
+            tp_rr = float(trial.suggest_float("tp_rr", 0.2, 10.0))
 
     tp_mgmt = str(trial.suggest_categorical("tp_mgmt", ["full", "partial_trailing"]))
     tp1_close_frac = 0.5
@@ -701,6 +711,14 @@ def _build_backtest_config_from_params(*, params: dict, base: OptimizationConfig
     tp_mgmt = str(params.get("tp_mgmt", "full"))
     tp1_close_frac = float(params.get("tp1_close_frac", 0.5))
     tp_trail_pct = float(params.get("tp_trail_pct", 0.5))
+
+    tp_mode_policy = str(getattr(base, "tp_mode_policy", "auto") or "auto").strip().lower()
+    if tp_mode_policy in {"rr_fixed", "force_rr", "rr"}:
+        rr_fixed = float(getattr(base, "tp_rr_fixed", 2.0) or 2.0)
+        if (not np.isfinite(float(rr_fixed))) or float(rr_fixed) <= 0:
+            rr_fixed = 2.0
+        tp_mode = "rr"
+        tp_rr = float(rr_fixed)
 
     sl_type = str(params.get("sl_type", "pct"))
     sl_pct = float(params.get("sl_pct", 1.0))
@@ -1004,6 +1022,12 @@ def run_optimization(
                     v = float(ov.get("avg_pnl_per_position", 0.0))
                 elif metric == "sharpe_pnl_per_position_train":
                     v = float(ov.get("sharpe_pnl_per_position", 0.0))
+                elif metric == "win_rate_train":
+                    positions = int(ov.get("positions", 0) or 0)
+                    min_trades_train = int(getattr(config, "min_trades_train", 0) or 0)
+                    if min_trades_train > 0 and positions < min_trades_train:
+                        raise optuna.TrialPruned()
+                    v = float(ov.get("win_rate", 0.0))
                 elif metric == "median_pnl_per_position_train_pct":
                     v0 = float(ov.get("median_pnl_per_position", 0.0))
                     v = (v0 / max(float(config.initial_equity), 1e-12)) * 100.0

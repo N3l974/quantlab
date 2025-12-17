@@ -66,6 +66,9 @@ class HyperliquidPerpsSource(SourceAdapter):
         earliest_ms = max(0, now_ms - 5000 * tf_ms)
         return (earliest_ms, True)
 
+    def ohlcv_max_candles_per_request(self, symbol: str, timeframe: str) -> int | None:
+        return 5000
+
     def fetch_ohlcv(self, symbol: str, timeframe: str, start_ms: int, end_ms: int) -> pd.DataFrame:
         payload = {
             "type": "candleSnapshot",

@@ -1,0 +1,20 @@
+{
+  "state": "building_report",
+  "run_dir": "C:\\Users\\Nahel\\Documents\\GitHub\\quantlab\\projects\\ohlcv-optimizer-v1\\runs\\20251217_163929_BTC_5m",
+  "started_at": 1765975170.3959029,
+  "updated_at": 1765975792.8811686,
+  "storage_url": "sqlite:///C:/Users/Nahel/Documents/GitHub/quantlab/projects/ohlcv-optimizer-v1/runs/20251217_163929_BTC_5m/optuna.db",
+  "workers": 8,
+  "strategies": [
+    "ma_cross",
+    "rsi_reversion",
+    "bollinger_breakout",
+    "range_breakout",
+    "stochastic"
+  ],
+  "current_strategy": null,
+  "current_strategy_index": null,
+  "strategies_total": 5,
+  "max_trials_per_strategy": 300,
+  "time_budget_seconds": null
+}

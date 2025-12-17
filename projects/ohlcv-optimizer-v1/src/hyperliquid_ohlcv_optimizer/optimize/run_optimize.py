@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sqlite3
 import sys
 import threading
@@ -114,7 +115,9 @@ def _cfg_from_context(cfg_payload: dict) -> OptimizationConfig:
         timeframe=str(cfg_payload.get("timeframe", "5m")),
         pm_mode=str(cfg_payload.get("pm_mode", "auto")),
         strategies=cfg_payload.get("strategies"),
+        risk_mode=str(cfg_payload.get("risk_mode", "risk")),
         risk_pct=float(cfg_payload.get("risk_pct", 0.01)),
+        fixed_notional_pct_equity=float(cfg_payload.get("fixed_notional_pct_equity", 0.0)),
         max_position_notional_pct_equity=float(cfg_payload.get("max_position_notional_pct_equity", 100.0)),
         max_leverage=float(cfg_payload["max_leverage"]) if cfg_payload.get("max_leverage") is not None else None,
         min_qty=float(cfg_payload.get("min_qty", 0.0)),
@@ -129,7 +132,10 @@ def _cfg_from_context(cfg_payload: dict) -> OptimizationConfig:
         global_top_k=int(cfg_payload.get("global_top_k", 50)),
         ranking_metric=str(cfg_payload.get("ranking_metric", "median_pnl_per_position_test")),
         train_frac=float(cfg_payload.get("train_frac", 0.75)),
+        optuna_objective_metric=str(cfg_payload.get("optuna_objective_metric", "return_train_pct")),
         require_positive_train_metric_for_test=bool(cfg_payload.get("require_positive_train_metric_for_test", True)),
+        tp_mode_policy=str(cfg_payload.get("tp_mode_policy", "auto")),
+        tp_rr_fixed=float(cfg_payload.get("tp_rr_fixed", 2.0)),
     )
 
 
@@ -230,7 +236,15 @@ def _start_spinner(prefix: str) -> tuple[threading.Event, threading.Thread]:
     return stop, th
 
 
-def _save_report_artifacts(*, run_dir: Path, report, ctx: dict, cfg: OptimizationConfig, df: pd.DataFrame) -> None:
+def _save_report_artifacts(
+    *,
+    run_dir: Path,
+    report,
+    ctx: dict,
+    cfg: OptimizationConfig,
+    df: pd.DataFrame,
+    storage_url: str,
+) -> None:
     run_id = str(ctx.get("run_id") or time.strftime("%Y%m%d_%H%M%S"))
 
     leaderboard_path = run_dir / "leaderboard.csv"
@@ -286,7 +300,9 @@ def _save_report_artifacts(*, run_dir: Path, report, ctx: dict, cfg: Optimizatio
             "timeframe": cfg.timeframe,
             "pm_mode": cfg.pm_mode,
             "strategies": cfg.strategies,
+            "risk_mode": str(getattr(cfg, "risk_mode", "risk")),
             "risk_pct": cfg.risk_pct,
+            "fixed_notional_pct_equity": float(getattr(cfg, "fixed_notional_pct_equity", 0.0) or 0.0),
             "max_position_notional_pct_equity": cfg.max_position_notional_pct_equity,
             "max_leverage": getattr(cfg, "max_leverage", None),
             "min_qty": float(getattr(cfg, "min_qty", 0.0) or 0.0),
@@ -302,6 +318,8 @@ def _save_report_artifacts(*, run_dir: Path, report, ctx: dict, cfg: Optimizatio
             "ranking_metric": cfg.ranking_metric,
             "train_frac": cfg.train_frac,
             "require_positive_train_metric_for_test": bool(getattr(cfg, "require_positive_train_metric_for_test", True)),
+            "tp_mode_policy": str(getattr(cfg, "tp_mode_policy", "auto") or "auto"),
+            "tp_rr_fixed": float(getattr(cfg, "tp_rr_fixed", 2.0) or 2.0),
             "multiprocess": True,
             "workers": int((ctx.get("config") or {}).get("workers", 1) or 1),
         },
@@ -640,12 +658,29 @@ def main() -> None:
         except Exception:
             pass
 
+    db_path = run_dir / "optuna.db"
+    default_storage_url = f"sqlite:///{db_path.as_posix()}"
+
     cfg_storage_url = str((ctx.get("config") or {}).get("storage_url") or "").strip()
-    if cfg_storage_url:
-        storage_url = cfg_storage_url
+    if not cfg_storage_url:
+        storage_url = default_storage_url
     else:
-        db_path = run_dir / "optuna.db"
-        storage_url = f"sqlite:///{db_path.as_posix()}"
+        u_cfg = cfg_storage_url.strip().lower()
+        if u_cfg.startswith("sqlite"):
+            try:
+                parsed = urlparse(str(cfg_storage_url))
+                p = unquote(str(parsed.path or ""))
+                if p.startswith("/") and len(p) >= 3 and p[2] == ":":
+                    p = p[1:]
+                cfg_db_path = Path(p)
+                if cfg_db_path.resolve() != db_path.resolve():
+                    storage_url = default_storage_url
+                else:
+                    storage_url = cfg_storage_url
+            except Exception:
+                storage_url = default_storage_url
+        else:
+            storage_url = cfg_storage_url
 
     try:
         u = str(storage_url or "").strip().lower()
@@ -952,14 +987,14 @@ def main() -> None:
         if df.empty:
             raise SystemExit("No candles loaded. Cannot build report.")
 
-        study_name_prefix = run_dir.name if str(storage_url).strip().lower().startswith("postgres") else None
+        study_name_prefix = run_dir.name
         report = build_report_from_storage(
             df=df,
             config=cfg,
             storage_url=storage_url,
             study_name_prefix=study_name_prefix,
         )
-        _save_report_artifacts(run_dir=run_dir, report=report, ctx=ctx, cfg=cfg, df=df)
+        _save_report_artifacts(run_dir=run_dir, report=report, ctx=ctx, cfg=cfg, df=df, storage_url=storage_url)
         try:
             _build_candidate_analytics_artifacts(run_dir=run_dir, report=report, cfg=cfg, df=df)
         except Exception:
